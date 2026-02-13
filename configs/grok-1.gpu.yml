@@ -1,0 +1,93 @@
+#===============================================================================
+# Model Architecture: Grok-1 314B
+# tokenizer_path should be set to appropriate Grok tokenizer
+
+base_emb_dim: 6144
+base_num_query_heads: 48
+base_num_kv_heads: 8
+base_mlp_dim: 32768               # Changed from Mixtral's 16384
+base_moe_mlp_dim: 32768           # Changed from Mixtral's 16384
+base_num_decoder_layers: 64       # Changed from Mixtral's 56
+head_dim: 128
+mlp_activations: ["silu","linear"]
+vocab_size: 131072                # Changed from Mixtral's 32768
+enable_dropout: False
+logits_via_embedding: False
+normalization_layer_epsilon: 1.0e-5
+num_experts: 8
+num_experts_per_tok: 2
+rope_max_timescale: 1_000_000
+decoder_block: "mixtral"
+#===============================================================================
+
+# ── Run Config ───────────────────────────────────────────────────────────────
+base_config: "base.yml"
+run_name: grok_1_314b_gpu_train_test
+hardware: gpu
+# NOTE: inline model; omit model_name!
+#model_name:
+
+# ── Training ─────────────────────────────────────────────────────────────────
+steps: 15 #1000000
+
+# ── Parallelism ──────────────────────────────────────────────────────────────
+# At most one DCN axis can be unspecified (-1)
+dcn_data_parallelism: -1 # auto-sharded
+dcn_fsdp_parallelism: 4
+dcn_sequence_parallelism: 1 # never recommended
+dcn_context_parallelism: 1
+dcn_tensor_parallelism: 1 # never recommended
+dcn_pipeline_parallelism: 1
+dcn_expert_parallelism: 1
+# At most one ICI axis can be unspecified (-1)
+ici_data_parallelism: 1
+ici_fsdp_parallelism: 1
+ici_sequence_parallelism: 1
+ici_context_parallelism: 1
+ici_tensor_parallelism: 1
+ici_pipeline_parallelism: 1
+ici_expert_parallelism: 8
+
+# ── Batch & Sequence ─────────────────────────────────────────────────────────
+per_device_batch_size: 11
+max_target_length: 8192           # Increased from 4096
+packing: true
+max_segments_per_seq: 32
+#num_layers_per_pipeline_stage: 4
+#num_pipeline_microbatches: 16
+
+# ── Attention & Compute ──────────────────────────────────────────────────────
+attention: cudnn_flash_te
+remat_policy: full #minimal_flash
+use_iota_embed: true
+scan_layers: true
+logits_dot_in_fp32: false
+shardy: false
+
+# ── Dtypes & Quantization ────────────────────────────────────────────────────
+dtype: bfloat16
+weight_dtype: bfloat16
+quantization: "fp8" #"nanoo_fp8"
+quantize_kvcache: false
+kv_quant_axis: heads_and_dkv
+kv_quant_dtype: int8
+checkpoint_is_quantized: false
+
+# ── MoE Runtime ──────────────────────────────────────────────────────────────
+megablox: false
+sparse_matmul: false # ValueError("Sparse matmul doesn't support using expert and pipeline parallelism together.")
+capacity_factor: 1
+expert_balance: true
+
+# ── Profiler ─────────────────────────────────────────────────────────────────
+profiler: "" #"xplane"
+upload_all_profiler_results: true
+skip_first_n_steps_for_profiler: 3
+profiler_steps: 1
+
+# ── Checkpointing ────────────────────────────────────────────────────────────
+enable_checkpointing: false
+async_checkpointing: false
+
+# ── Dataset ──────────────────────────────────────────────────────────────────
+dataset_type: "synthetic"

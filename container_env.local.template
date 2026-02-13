@@ -1,0 +1,15 @@
+# Registry credentials for private Docker images.
+# Copy this file to container_env.local.sh and fill in your values.
+# container_env.local.sh is gitignored — your credentials will never be committed.
+#
+# NOTE: For Slurm multi-node jobs, prefer 'docker login' or 'podman login'
+# instead (one-time cluster setup). This file works for run_local.sh and
+# single-node use.
+#
+# Usage:
+#   cp container_env.local.template container_env.local.sh
+#   # edit container_env.local.sh with your credentials
+
+DOCKER_REGISTRY="docker.io"
+DOCKER_USERNAME=""
+DOCKER_TOKEN=""

@@ -1,0 +1,150 @@
+#!/bin/bash
+
+# Training environment configuration.
+# Edit this file to tune XLA, NCCL, ROCm, and other runtime settings.
+#
+# Sourced by _train.sh before launching training.
+# Per-run overrides: pass _env_KEY=VALUE after -- in submit.sh.
+
+# NOTE: the entire build logic is commented out
+#       to use the Docker image's default XLA_FLAGS!
+: <<'BLOCK_COMMENT_TO_USE_DOCKER_IMAGE_DEFAULT_XLA_FLAGS'
+# ---- Build XLA_FLAGS safely with clear structure ----
+XLA_FLAGS=""
+
+# === Core compiler and dump options ===
+XLA_FLAGS+=" --xla_gpu_enable_cublaslt=true"
+XLA_FLAGS+=" --xla_gpu_graph_level=0"
+XLA_FLAGS+=" --xla_gpu_autotune_level=0"
+# === GEMM and codegen behavior ===
+XLA_FLAGS+=" --xla_gpu_enable_triton_gemm=false"
+XLA_FLAGS+=" --xla_gpu_triton_gemm_any=false"
+XLA_FLAGS+=" --xla_gpu_enable_command_buffer=''"   # Leave empty to disable explicit command buffer use
+# === Collective combination / decomposition ===
+XLA_FLAGS+=" --xla_gpu_enable_all_gather_combine_by_dim=false"
+#XLA_FLAGS+=" --xla_gpu_enable_reduce_scatter_combine_by_dim=false"
+#XLA_FLAGS+=" --xla_gpu_all_gather_combine_threshold_bytes=8589934592"   # Fix OOM for llama3.1-405b (dcn_fsdp=8, ici_fsdp=8)
+#XLA_FLAGS+=" --xla_gpu_all_reduce_combine_threshold_bytes=1073741824"
+#XLA_FLAGS+=" --xla_gpu_collective_permute_decomposer_threshold=1073741824"
+#XLA_FLAGS+=" --xla_gpu_reduce_scatter_combine_threshold_bytes=1073741824"
+# === Overlapping and pipelining ===
+#XLA_FLAGS+=" --xla_gpu_enable_highest_priority_async_stream=true"
+XLA_FLAGS+=" --xla_gpu_enable_latency_hiding_scheduler=true"
+XLA_FLAGS+=" --xla_gpu_enable_pipelined_all_gather=true"
+XLA_FLAGS+=" --xla_gpu_enable_pipelined_all_reduce=true"
+#XLA_FLAGS+=" --xla_gpu_enable_pipelined_p2p=true"
+XLA_FLAGS+=" --xla_gpu_enable_pipelined_reduce_scatter=true"
+#XLA_FLAGS+=" --xla_gpu_enable_while_loop_double_buffering=true"  # May cause OOM for llama3.1-405b (dcn_fsdp=8, ici_fsdp=8) even setting --xla_gpu_all_gather_combine_threshold_bytes=8589934592
+#XLA_FLAGS+=" --xla_gpu_experimental_parallel_collective_overlap_limit=2"  # May conflict with latency-hiding scheduler (LHS=true)
+# === Misc. ===
+#XLA_FLAGS+=" --xla_gpu_unsupported_use_all_reduce_one_shot_kernel=true"
+
+# ---- Finalize and export XLA_FLAGS ----
+export XLA_FLAGS
+BLOCK_COMMENT_TO_USE_DOCKER_IMAGE_DEFAULT_XLA_FLAGS
+
+# ---- XLA dump ----
+#XLA_FLAGS="$XLA_FLAGS --xla_dump_hlo_as_text"
+#XLA_FLAGS="$XLA_FLAGS --xla_dump_hlo_module_re=^jit_train_step$"
+#XLA_FLAGS="$XLA_FLAGS --xla_dump_hlo_pipeline_re='(?i)gpu'"
+#XLA_FLAGS="$XLA_FLAGS --xla_dump_to=/outputs/${JOB_DIR}/xla_dump"
+#export XLA_FLAGS
+
+# ---- Fix for JAX-0.8.2 ----
+XLA_FLAGS="${XLA_FLAGS:+$XLA_FLAGS }--xla_gpu_enable_command_buffer=''"
+export XLA_FLAGS
+
+export NCCL_CHECKS_DISABLE=1
+export NCCL_DEBUG=WARN
+#export RCCL_KERNEL_COLL_TRACE_ENABLE=1  # For debugging if needed
+export TF_CPP_MIN_LOG_LEVEL=2
+
+# ---- Memory fraction ----
+export XLA_PYTHON_CLIENT_MEM_FRACTION=.85
+
+export XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB=512
+
+# ---- Multi-rail network optimization ----
+#export NCCL_CROSS_NIC=2  # For multi-rail networks
+export NCCL_NCHANNELS_PER_NET_PEER=4
+export NCCL_NSOCKS_PERTHREAD=4
+export NCCL_SOCKET_NTHREADS=8
+
+# ---- InfiniBand tuning ----
+export NCCL_IB_QPS_PER_CONNECTION=4
+#export NCCL_IB_RETRY_CNT=7
+#export NCCL_IB_TIMEOUT=23
+
+# ---- Protocol and algorithm selection ----
+#export NCCL_ALGO=Ring,Tree  # Hybrid algorithm selection
+#export NCCL_PROTO=Simple  # Better for large messages in MoE
+
+# ---- Buffer management ----
+#export NCCL_BUFFSIZE=8388608  # 8MB buffers
+# Larger buffer sizes for massive models (e.g. 300B+ parameters)
+#export NCCL_BUFFSIZE=16777216  # 16MB
+
+# ---- GPU compute settings ----
+export CUDA_DEVICE_MAX_CONNECTIONS=1
+export GPU_MAX_HW_QUEUES=2
+
+# ---- AMD-specific optimizations ----
+export HIP_FORCE_DEV_KERNARG=1
+export HSA_ENABLE_IPC_MODE_LEGACY=1
+export HSA_FORCE_FINE_GRAIN_PCIE=1
+export HSA_NO_SCRATCH_RECLAIM=1
+
+# ---- Transformer Engine optimizations ----
+export NVTE_CK_USES_BWD_V3=1
+export NVTE_CK_USES_FWD_V3=1
+export NVTE_FRAMEWORK=jax
+export NVTE_FUSED_ATTN=1
+export NVTE_FUSED_ATTN_AOTRITON=0
+export NVTE_FUSED_ATTN_CK=1
+export NVTE_USE_CAST_TRANSPOSE_TRITON=0
+export NVTE_USE_HIPBLASLT=1
+export NVTE_USE_ROCM=1
+
+# ---- Composable Kernel optimizations ----
+export CK_TILE_FLOAT_TO_BFLOAT16_DEFAULT=2
+export NVTE_ALLOW_NONDETERMINISTIC_ALGO=1
+export NVTE_CK_HOW_V3_BF16_CVT=2
+export NVTE_CK_IS_V3_ATOMIC_FP32=0
+
+# ---- Compilation cache settings ----
+#export JAX_COMPILATION_CACHE_DIR="$OUTPUT_PATH/../jax_cache"
+#export JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES=0
+
+# ---- PGLE (Profile-Guided Layout Optimization) - uncomment after first run ----
+#export JAX_ENABLE_PGLE=true
+#export JAX_PGLE_AGGREGATION_PERCENTILE=90
+#export JAX_PGLE_PROFILING_RUNS=5
+
+export IONIC_LOCKFREE=all
+# NOTE: NCCL_DMABUF_ENABLE=1 may SIGSEGV without host kernel metadata;
+#       mount /boot (-v /boot:/boot:ro) or disable this flag!
+export NCCL_DMABUF_ENABLE=1
+export NCCL_GDRCOPY_ENABLE=1
+export NCCL_GDR_FLUSH_DISABLE=1
+export NCCL_IB_ECE_ENABLE=0
+export NCCL_IB_FIFO_TC=192
+export NCCL_IB_GID_INDEX=1
+export NCCL_IB_PCI_RELAXED_ORDERING=1
+export NCCL_IB_TC=104
+export NCCL_IB_USE_INLINE=1
+export NCCL_IGNORE_CPU_AFFINITY=1
+export NCCL_PXN_DISABLE=0
+export NET_OPTIONAL_RECV_COMPLETION=1
+export RCCL_GDR_FLUSH_GPU_MEM_NO_RELAXED_ORDERING=0
+export RCCL_LL128_FORCE_ENABLE=1
+export RCCL_MSCCLPP_ENABLE=1
+
+#export HSA_DISABLE_CACHE=1
+#export IB_PCI_RELAXED_ORDERING=1
+#export NCCL_IB_QPS=2
+#export NCCL_IB_SL=0
+#export NCCL_IB_SPLIT_DATA_ON_QPS=0
+#export NCCL_NET_GDR_LEVEL=3
+#export NCCL_OOB_NET_IFNAME=enp81s0f1.2026
+#export NCCL_TOPO_DUMP_FILE=/tmp/system_run2.txt
+#export UCX_LOG_LEVEL=INFO
