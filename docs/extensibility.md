@@ -43,7 +43,7 @@ Each layer communicates with its neighbors through environment variables and cal
 
 1. Write a `_native.sh` that exports the same env vars `_container.sh` does, maps host paths, and calls `_train.sh` directly.
 2. Parameterize the `/outputs` base path in `_train.sh` (currently a Docker mount alias) — the single downstream touch point.
-3. Add a container-presence guard (~5 one-line checks) to `cleanup_gpu.sh` and `preflight.sh` so they skip container operations when running natively.
+3. Add a container-presence guard (~5 one-line checks) to `release_gpu.sh` and `preflight.sh` so they skip container operations when running natively.
 4. **Observability prerequisites** — In the container-based flow, [Ray](https://www.ray.io/) is `pip install`'d and [Prometheus](https://prometheus.io/) is downloaded automatically at startup (`ray_cluster.sh`, `prometheus.sh`). For native execution, these must be pre-installed on every node (or the install functions reused outside the container). The rest of the observability pipeline (metrics exporter, plugins, TSDB persistence) works as-is.
 
 **Effort:** One new file (~50 lines) + a few one-line guards + observability dependencies on the host. See [Architecture: Container Boundary](architecture.md#container-boundary) for details.

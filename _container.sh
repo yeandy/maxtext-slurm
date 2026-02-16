@@ -257,6 +257,14 @@ if [[ "$MODE" == "pull-only" ]]; then
     exit 0
 fi
 
+# ---- Container naming & cleanup on cancellation ----
+# Unique name lets us 'docker stop' the container when the Slurm job is
+# cancelled (scancel).  Without this, cancelling kills srun/bash but the
+# Docker container (managed by dockerd) keeps running until the next job.
+CONTAINER_NAME="maxtext-slurm-${JOB_ID}-node${NODE_RANK}"
+# Remove any leftover container with the same name (e.g., from a prior SIGKILL).
+"${DOCKER_CMD[@]}" rm -f "$CONTAINER_NAME" 2>/dev/null || true
+
 # NOTE: All IB/ANP-related mount options go here!
 if [[ "$DOCKER_IMAGE_HAS_AINIC" == "true" ]] || [[ "$MODE" == "interactive" ]]; then
     IB_MOUNT_OPTIONS=(
@@ -338,7 +346,7 @@ else
     echo "WARNING: No GPU devices detected (no /dev/kfd, no nvidia-smi)" >&2
 fi
 
-echo "==STARTING DOCKER CONTAINER=="
+echo "==STARTING DOCKER CONTAINER== ($CONTAINER_NAME)"
 
 # $OUTPUTS_DIR was already created above (before the coredump-mount check).
 
@@ -346,35 +354,67 @@ echo "==STARTING DOCKER CONTAINER=="
 GROUP_ADD_ARGS=()
 for gid in $(id -G); do GROUP_ADD_ARGS+=(--group-add "$gid"); done
 
-"${DOCKER_CMD[@]}" run \
-    --rm \
-    --label maxtext_slurm=1 \
-    --ulimit nofile="$NOFILE_LIMIT:$NOFILE_LIMIT" \
-    --cap-add=SYS_PTRACE \
-    --ipc=host \
-    --network=host \
-    --privileged \
-    "${GPU_DEVICE_ARGS[@]}" \
-    "${IB_DEVICE_OPTIONS[@]}" \
-    --env "JAX_COORDINATOR_IP=$JAX_COORDINATOR_IP" \
-    --env "JAX_COORDINATOR_PORT=$JAX_COORDINATOR_PORT" \
-    --env "RAY_PORT=${RAY_PORT:-6379}" \
-    --env "JOB_DIR=$JOB_DIR" \
-    --env "MODEL_NAME_ALIAS=${MODEL_NAME_ALIAS}" \
-    "${NCCL_ENV_ARGS[@]}" \
-    --env "NNODES=$NNODES" \
-    --env "NODE_RANK=$NODE_RANK" \
-    --env "LOGIN_NODE_HOSTNAME=$LOGIN_NODE_HOSTNAME" \
-    --env "LOGIN_NODE_IP=$LOGIN_NODE_IP" \
-    --env "JOB_ID=$JOB_ID" \
-    --env "NODELIST_EXPANDED=$NODELIST_EXPANDED" \
-    "${GROUP_ADD_ARGS[@]}" \
-    "${IB_MOUNT_OPTIONS[@]}" \
-    "${DATASET_MOUNT_OPTIONS[@]}" \
-    "${COREDUMP_MOUNT_OPTIONS[@]}" \
-    "${REPO_MOUNT_OPTIONS[@]}" \
-    -v /boot:/boot:ro \
-    -v "$SCRIPT_DIR":"$DOCKER_SCRIPT_DIR" \
-    -v "$OUTPUTS_DIR":/outputs \
-    -w "$DOCKER_SCRIPT_DIR" \
-    "${INTERACTIVE_TTY[@]}" "$IMAGE_TO_RUN" "${DOCKER_ARGS[@]}"
+# ---- Cancellation cleanup (scancel / SIGTERM) ----
+# EXIT trap: safety net — stops the container if it's still running.
+# TERM/INT traps (script mode only): respond to scancel immediately via
+# background 'wait'; interactive mode leaves signals to docker run.
+_CONTAINER_STOPPED=0
+_cleanup_container() {
+    [[ "$_CONTAINER_STOPPED" -eq 1 ]] && return
+    _CONTAINER_STOPPED=1
+    echo "[INFO] $HOSTNAME: Cleaning up container $CONTAINER_NAME ..."
+    bash "$SCRIPT_DIR/utils/release_gpu.sh" --container "$CONTAINER_NAME"
+}
+trap _cleanup_container EXIT
+
+DOCKER_RUN_ARGS=(
+    --rm
+    --name "$CONTAINER_NAME"
+    --label maxtext_slurm=1
+    --ulimit "nofile=$NOFILE_LIMIT:$NOFILE_LIMIT"
+    --cap-add=SYS_PTRACE
+    --ipc=host
+    --network=host
+    --privileged
+    "${GPU_DEVICE_ARGS[@]}"
+    "${IB_DEVICE_OPTIONS[@]}"
+    --env "JAX_COORDINATOR_IP=$JAX_COORDINATOR_IP"
+    --env "JAX_COORDINATOR_PORT=$JAX_COORDINATOR_PORT"
+    --env "RAY_PORT=${RAY_PORT:-6379}"
+    --env "JOB_DIR=$JOB_DIR"
+    --env "MODEL_NAME_ALIAS=${MODEL_NAME_ALIAS}"
+    "${NCCL_ENV_ARGS[@]}"
+    --env "NNODES=$NNODES"
+    --env "NODE_RANK=$NODE_RANK"
+    --env "LOGIN_NODE_HOSTNAME=$LOGIN_NODE_HOSTNAME"
+    --env "LOGIN_NODE_IP=$LOGIN_NODE_IP"
+    --env "JOB_ID=$JOB_ID"
+    --env "NODELIST_EXPANDED=$NODELIST_EXPANDED"
+    "${GROUP_ADD_ARGS[@]}"
+    "${IB_MOUNT_OPTIONS[@]}"
+    "${DATASET_MOUNT_OPTIONS[@]}"
+    "${COREDUMP_MOUNT_OPTIONS[@]}"
+    "${REPO_MOUNT_OPTIONS[@]}"
+    -v /boot:/boot:ro
+    -v "$SCRIPT_DIR":"$DOCKER_SCRIPT_DIR"
+    -v "$OUTPUTS_DIR":/outputs
+    -w "$DOCKER_SCRIPT_DIR"
+    "${INTERACTIVE_TTY[@]}"
+    "$IMAGE_TO_RUN"
+    "${DOCKER_ARGS[@]}"
+)
+
+if [[ "$MODE" == "script" ]]; then
+    # TERM/INT + background/wait: bash can only run traps while 'wait' is the
+    # current command.  A foreground docker-run blocks trap delivery, so scancel's
+    # SIGTERM would never trigger container cleanup before Slurm escalates to SIGKILL.
+    trap '_cleanup_container; exit 143' TERM
+    trap '_cleanup_container; exit 130' INT
+    "${DOCKER_CMD[@]}" run "${DOCKER_RUN_ARGS[@]}" &
+    wait $!
+else
+    "${DOCKER_CMD[@]}" run "${DOCKER_RUN_ARGS[@]}"
+fi
+_rc=$?
+_CONTAINER_STOPPED=1  # Container exited normally; --rm already cleaned up.
+exit "$_rc"

@@ -6,11 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST=$(hostname -s)
 
 # ---- Container + GPU cleanup ----
-source "$SCRIPT_DIR/utils/docker_utils.sh"
-DOCKER_BIN="$(get_docker_bin)" || { echo "$HOST | DOCKER_BIN: not found"; }
-if [[ -n "${DOCKER_BIN:-}" ]]; then
-    DOCKER_BIN="$DOCKER_BIN" bash "$SCRIPT_DIR/utils/cleanup_gpu.sh"
-fi
+bash "$SCRIPT_DIR/utils/release_gpu.sh"
 
 # ---- Disk cleanup ----
 disk_before=$(df -BG / 2>/dev/null | awk 'NR==2 {print $4}')
@@ -18,8 +14,9 @@ disk_before=$(df -BG / 2>/dev/null | awk 'NR==2 {print $4}')
 find /tmp -maxdepth 1 -user "$(id -u)" -mtime +1 -exec rm -rf {} + 2>/dev/null || true
 find /var/tmp -maxdepth 1 -user "$(id -u)" -mtime +1 -exec rm -rf {} + 2>/dev/null || true
 # Stopped containers and dangling (untagged) images — preserves cached tagged images
-if [[ -n "${DOCKER_BIN:-}" ]]; then
-    read -ra _DOCKER_CMD <<< "$DOCKER_BIN"
+source "$SCRIPT_DIR/utils/docker_utils.sh"
+if _DOCKER_BIN="$(get_docker_bin 2>/dev/null)"; then
+    read -ra _DOCKER_CMD <<< "$_DOCKER_BIN"
     "${_DOCKER_CMD[@]}" container prune -f 2>/dev/null || true
     "${_DOCKER_CMD[@]}" image prune -f 2>/dev/null || true
 fi

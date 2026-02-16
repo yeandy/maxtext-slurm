@@ -17,6 +17,10 @@ fi
 # ============================================================================
 # Preflight warnings (non-fatal; device-agnostic)
 # ============================================================================
+# No GPU or container cleanup here — run_local.sh must not touch other
+# processes, as it could accidentally kill a running job's rank on this node.
+# If GPUs are occupied, the training job will fail on its own.
+# To manually clean up stale containers, run: bash utils/release_gpu.sh
 
 # Warn if GPUs are occupied (best-effort, does not abort).
 if [[ -e /dev/kfd ]] && command -v rocm-smi &>/dev/null; then

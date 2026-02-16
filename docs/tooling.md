@@ -89,6 +89,14 @@ Only used for load test job TGS (tokens/GPU/sec) calculation.
 #   utils/tag_tgs.sh -c
 ```
 
+## Release GPUs (stop containers, kill stale processes)
+
+```bash
+utils/release_gpu.sh
+```
+
+Stops all running containers, kills stale GPU processes, and waits for GPU memory to be freed. Also called automatically by preflight (before each job) and on scancel (SIGTERM trap).
+
 ## Clean up orphaned artifacts
 
 See [Job Submission: How artifacts work](job-submission.md#how-artifacts-work) for details on the artifact system.
