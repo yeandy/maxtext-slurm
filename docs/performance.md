@@ -32,15 +32,15 @@ Trace files are written to `base_output_directory` (i.e. `OUTPUT_PATH`).
 
 [XLA](https://openxla.org/)'s JIT compiler transforms JAX code into [HLO (High Level Operations)](https://openxla.org/xla/operation_semantics) IR before generating GPU kernels. HLO dumps capture the compiled computation graph — which collectives are fused, how loops are structured, and what kernels will execute each step — independent of actual execution timing.
 
-Uncomment the XLA dump block in `train_env.sh`:
+Enable XLA dump for any run by passing `_env_ENABLE_XLA_DUMP=1`:
 
 ```bash
-XLA_FLAGS="$XLA_FLAGS --xla_dump_hlo_as_text"
-XLA_FLAGS="$XLA_FLAGS --xla_dump_hlo_module_re=^jit_train_step$"
-XLA_FLAGS="$XLA_FLAGS --xla_dump_hlo_pipeline_re='(?i)gpu'"
-XLA_FLAGS="$XLA_FLAGS --xla_dump_to=/outputs/${JOB_DIR}/xla_dump"
-export XLA_FLAGS
+submit.sh           70b -N 1 -- steps=1 _env_ENABLE_XLA_DUMP=1
+run_local.sh        70b      -- steps=1 _env_ENABLE_XLA_DUMP=1
+in_container_run.sh 70b      -- steps=1 _env_ENABLE_XLA_DUMP=1
 ```
+
+This appends the following XLA flags (configured in `train_env.sh`):
 
 | Flag | Purpose |
 |------|---------|
@@ -49,7 +49,16 @@ export XLA_FLAGS
 | `--xla_dump_hlo_pipeline_re` | Regex filter for compiler passes (`(?i)gpu` captures GPU-specific passes) |
 | `--xla_dump_to` | Output directory for dump files |
 
-The dump directory will contain files like `module_0000.jit_train_step.gpu_after_optimizations.txt` — the final optimized HLO that maps to GPU kernels.
+Dump files are written to `<OUTPUT_PATH>/xla_dump/`. Key files:
+
+| File | Contents |
+|------|----------|
+| `*.before_optimizations.txt` | HLO before GPU compiler passes |
+| `*.gpu_after_optimizations.txt` | Final optimized HLO that maps to GPU kernels |
+| `*.gpu_after_optimizations-buffer-assignment.txt` | Memory buffer layout |
+| `*.gpu_after_optimizations-memory-usage-report.txt` | Memory usage breakdown |
+| `*.ir-with-opt.ll` | Optimized LLVM IR |
+| `*.thunk_sequence.txt` | Runtime execution schedule |
 
 ## Analysis
 
@@ -155,5 +164,5 @@ The rest of `train_env.sh` exports environment variables that control JAX, NCCL/
 
 1. **Baseline run** — train a few steps to verify the job works.
 2. **Profile** — enable `profiler: "xplane"`; merge traces and view in Perfetto. Use TraceLens for automated GEMM and communication analysis.
-3. **HLO dump** (optional) — enable the XLA dump flags to inspect the compiled computation graph with IRLens and understand compiler decisions behind what the traces revealed.
+3. **HLO dump** (optional) — pass `_env_ENABLE_XLA_DUMP=1` to inspect the compiled computation graph with IRLens and understand compiler decisions behind what the traces revealed.
 4. **Tune** — adjust XLA flags and environment variables in `train_env.sh` based on findings.

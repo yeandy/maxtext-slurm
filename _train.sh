@@ -52,10 +52,17 @@ export OUTPUT_PATH=$(resolve_output_path "$JOB_DIR" "$MODEL_NAME" "${MODEL_NAME_
 echo "OUTPUT_PATH=$OUTPUT_PATH"
 mkdir -p -v "$OUTPUT_PATH"
 
+# Build associative array from extracted envs so train_env.sh can look up
+# config inputs (e.g. ENABLE_XLA_DUMP) without needing them exported yet.
+declare -A EXTRACTED_ENV_MAP
+for env_pair in "${EXTRACTED_ENVS[@]}"; do
+    EXTRACTED_ENV_MAP["${env_pair%%=*}"]="${env_pair#*=}"
+done
+
 # ---- Load environment configuration (edit train_env.sh to customize) ----
 source "$SCRIPT_DIR/train_env.sh"
 
-# Export extracted environment variables
+# Export extracted environment variables (after train_env.sh so overrides win).
 if [ ${#EXTRACTED_ENVS[@]} -gt 0 ]; then
     echo "Exporting extracted environment variables:"
     for env_pair in "${EXTRACTED_ENVS[@]}"; do
