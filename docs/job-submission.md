@@ -90,6 +90,31 @@ run_local.sh 70b -- steps=10
 
 `JOB_WORKSPACE` and `_env_` overrides work the same as with `submit.sh`.
 
+## Inside-container runs (`in_container_run.sh`)
+
+Run training from inside the container — when you're already in an interactive shell, a `docker exec` session, a Kubernetes pod, or any pre-built environment with the training image:
+
+```bash
+in_container_run.sh 70b -- steps=10
+in_container_run.sh 70b:my-experiment -- per_device_batch_size=2
+RAY=1 in_container_run.sh 70b -- steps=10
+```
+
+The interface is identical to `run_local.sh` (same model spec format, same `--` separator, same `_env_` overrides), but it skips the container launch — it runs `_train.sh` directly.
+
+A common workflow is to enter the container interactively, then iterate:
+
+```bash
+# On the host:
+run_local.sh                          # drop into an interactive container shell
+
+# Inside the container:
+in_container_run.sh 70b -- steps=5                     # quick test
+in_container_run.sh 70b -- steps=5 remat_policy=full   # try a different config
+```
+
+Environment variables (`JAX_COORDINATOR_IP`, `NNODES`, etc.) default to single-node local values but can be overridden for multi-node setups. `JOB_WORKSPACE` defaults to `/outputs` inside the container or `outputs/` for native runs.
+
 ## Checkpointing
 
 Enable checkpointing by passing `enable_checkpointing=true` as a CLI passthrough arg:
@@ -151,7 +176,7 @@ Training behavior is controlled by two config files and an optional per-run over
 
 ### `container_env.sh` (Docker image & paths)
 
-Sourced by `_container.sh` before launching the container. Defines the image and related settings:
+Sourced by `_container.sh` before launching the container (and by `in_container_run.sh` for `MAXTEXT_REPO_DIR` and `MAXTEXT_PATCH_BRANCH`). Defines the image and related settings:
 
 ```bash
 DOCKER_IMAGE="rocm/jax-training:latest"
@@ -204,9 +229,10 @@ Sourced by `_train.sh` before every training launch. Any `export` in this file a
 Any argument after `--` that starts with `_env_` is treated as an environment variable override. The prefix is stripped and the remainder is exported **after** `train_env.sh` is sourced, so overrides always take precedence:
 
 ```bash
-submit.sh    70b -N 2 -- _env_NCCL_DEBUG=INFO                                                            # exports NCCL_DEBUG=INFO
-run_local.sh 70b      -- _env_NCCL_DEBUG=INFO steps=5                                                    # same mechanism, local run
-submit.sh    70b -N 2 -- _env_NCCL_DEBUG=INFO _env_XLA_PYTHON_CLIENT_MEM_FRACTION=.93 remat_policy=full  # multiple
+submit.sh            70b -N 2 -- _env_NCCL_DEBUG=INFO           # exports NCCL_DEBUG=INFO
+run_local.sh         70b      -- _env_NCCL_DEBUG=INFO steps=5   # same mechanism, local run
+in_container_run.sh  70b      -- _env_NCCL_DEBUG=INFO steps=5   # same mechanism, inside container
+submit.sh            70b -N 2 -- _env_NCCL_DEBUG=INFO _env_XLA_PYTHON_CLIENT_MEM_FRACTION=.93 remat_policy=full   # multiple
 ```
 
 **Example: [`XLA_PYTHON_CLIENT_MEM_FRACTION`](https://docs.jax.dev/en/latest/gpu_memory_allocation.html)** — controls what fraction of GPU memory [JAX](https://jax.dev/) pre-allocates. The default in `train_env.sh` is `.85`, which works for most models. Large models need a higher value:

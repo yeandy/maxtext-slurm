@@ -5,34 +5,38 @@ This document describes the layered architecture that makes each component (sche
 ## Training flow
 
 ```
-submit.sh                                      run_local.sh
-    │  (Slurm)                                       │  (local, single-node)
-    ▼                                                │
-_job.sbatch                                          │
-    │                                                │
-    └──► _container.sh (sources container_env.sh) ◄──┘
-                            │
-                ┌───────────┴───────────┐
-                │ (default)             │ RAY=1
-                │                       ▼
-                │             _train_with_ray.sh
-                │                       │
-                │             ray_cluster.sh + prometheus.sh (Ray Dashboard + Prometheus + TensorBoard)
-                │                       │
-                ▼                       ▼
-   _train.sh (shared entry point; sources train_env.sh)
-                │                       │
-                ▼                       ▼
-         mfu_tracker.py       _ray_actor.py
-         (CLI wrapper)                  │
-                │             mfu_tracker.setup()
-                │                       │
-                └───────────┬───────────┘
-                            ▼
-                  MaxText.train.main()
+submit.sh                      run_local.sh              in_container_run.sh
+    │  (Slurm)                      │  (local)                │  (already inside container)
+    ▼                               │                         │
+_job.sbatch                         │                         │
+    │                               │                         │
+    └──► _container.sh ◄────────────┘                         │
+              │  (sources container_env.sh)                   │
+              │  (launches Docker/Podman)                     │
+              │                                               │
+              └──────────────────────┬────────────────────────┘
+                                     │
+                         ┌───────────┴───────────┐
+                         │ (default)             │ RAY=1
+                         │                       ▼
+                         │             _train_with_ray.sh
+                         │                       │
+                         │             ray_cluster.sh + prometheus.sh (Ray Dashboard + Prometheus + TensorBoard)
+                         │                       │
+                         ▼                       ▼
+            _train.sh (shared entry point; sources train_env.sh)
+                         │                       │
+                         ▼                       ▼
+                  mfu_tracker.py       _ray_actor.py
+                  (CLI wrapper)                  │
+                         │             mfu_tracker.setup()
+                         │                       │
+                         └───────────┬───────────┘
+                                     ▼
+                           MaxText.train.main()
 ```
 
-`run_local.sh` with a model name verifies GPU availability first; with no args it drops into an interactive shell. See [Job Submission: Local Runs](job-submission.md#local-runs-run_localsh) for usage.
+`run_local.sh` with a model name verifies GPU availability first; with no args it drops into an interactive shell. `in_container_run.sh` provides the same interface for use inside the container (skips the Docker launch). All three entry points share argument parsing via `utils/parse_job_args.sh`; the two `run` scripts additionally share environment setup, logging, and job summary via `utils/run_setup.sh`. See [Job Submission](job-submission.md) for usage.
 
 `mfu_tracker` auto-detects GPU + dtype and wraps stdout/stderr to append `MFU: X.XX%` to TFLOP/s/device log lines.
 
@@ -99,7 +103,7 @@ Before training starts, `_job.sbatch` runs per-host preflight checks (`preflight
 
 ## Container boundary
 
-All training runs inside a container (Docker or Podman, auto-detected), but the coupling is confined to a single file: `_container.sh`. Everything upstream (`submit.sh`, `_job.sbatch`, `run_local.sh`) and downstream (`_train.sh`, `train_env.sh`) is container-agnostic. See [Extensibility: Execution Environment](extensibility.md#axis-2-execution-environment-container--native) for adaptation paths.
+The default path runs training inside a container (Docker or Podman, auto-detected), with coupling confined to `_container.sh`. `in_container_run.sh` provides an alternative that bypasses the container launch entirely — for use when already inside the container or any environment with JAX pre-installed. Everything upstream (`submit.sh`, `_job.sbatch`, `run_local.sh`) and downstream (`_train.sh`, `train_env.sh`) is container-agnostic. See [Extensibility: Execution Environment](extensibility.md#axis-2-execution-environment-container--native) for adaptation paths.
 
 ## Orchestrator extensibility
 
@@ -110,6 +114,6 @@ The codebase is layered so that scheduler coupling is confined to the orchestrat
 | **Orchestration** | `submit.sh`, `_job.sbatch`, `reservation.sh`, `slurm_job_monitor.sh` | Slurm-specific (`sbatch`, `srun`, `#SBATCH`). Replace this tier for a different scheduler. |
 | **Container boundary** | `_container.sh` | Reads `SLURM_*` env vars with generic fallbacks (`JOB_ID`, `NNODES`, `NODE_RANK`); works unmodified when callers set the generic names. |
 | **Training** | `_train.sh`, `train_env.sh`, all Python code | Zero scheduler awareness. |
-| **Utilities** | `artifact.sh`, `preflight.sh`, `docker_utils.sh`, `stage_timeout.sh` | No scheduler dependency. |
+| **Utilities** | `parse_job_args.sh`, `run_setup.sh`, `artifact.sh`, `preflight.sh`, `docker_utils.sh`, `stage_timeout.sh` | No scheduler dependency. |
 
 To add a new scheduler (e.g., Kubernetes), only the orchestration tier needs a parallel implementation. See [Extensibility](extensibility.md) for details on each adaptation axis.

@@ -37,16 +37,18 @@ Each layer communicates with its neighbors through environment variables and cal
 
 ## Axis 2: execution environment (container → native)
 
-**Current state.** All training runs inside a container, but the coupling is isolated to `_container.sh`. Everything upstream (`submit.sh`, `run_local.sh`) and downstream (`_train.sh`, `train_env.sh`) is container-agnostic. Within the container boundary, Docker and Podman are auto-detected by `docker_utils.sh` — downstream scripts are unaware of which runtime is in use.
+**Current state.** The default path (`submit.sh`, `run_local.sh`) runs training inside a container (Docker or Podman, auto-detected by `docker_utils.sh`), with coupling isolated to `_container.sh`. `in_container_run.sh` already provides a container-launch-free path — it sources `utils/run_setup.sh` for shared setup, performs container-internal initialization (ulimit, coredump, pip installs), and calls `_train.sh` directly. Everything downstream (`_train.sh`, `train_env.sh`) is container-agnostic.
 
-**To add a native (non-containerized) execution path:**
+**To add a fully native (no container at all) execution path:**
 
-1. Write a `_native.sh` that exports the same env vars `_container.sh` does, maps host paths, and calls `_train.sh` directly.
-2. Parameterize the `/outputs` base path in `_train.sh` (currently a Docker mount alias) — the single downstream touch point.
+`in_container_run.sh` is the starting point — it already bypasses the Docker/Podman launch. Adapting it for a bare-metal host requires:
+
+1. Guard the container-specific setup (coredump paths, pip installs) behind a container-presence check, or extract it into a separate step.
+2. Parameterize the `/outputs` base path in `_train.sh` (currently a Docker mount alias) — the single downstream touch point. (`in_container_run.sh` already handles this: `JOB_WORKSPACE` auto-detects `/outputs` vs `$SCRIPT_DIR/outputs`.)
 3. Add a container-presence guard (~5 one-line checks) to `release_gpu.sh` and `preflight.sh` so they skip container operations when running natively.
 4. **Observability prerequisites** — In the container-based flow, [Ray](https://www.ray.io/) is `pip install`'d and [Prometheus](https://prometheus.io/) is downloaded automatically at startup (`ray_cluster.sh`, `prometheus.sh`). For native execution, these must be pre-installed on every node (or the install functions reused outside the container). The rest of the observability pipeline (metrics exporter, plugins, TSDB persistence) works as-is.
 
-**Effort:** One new file (~50 lines) + a few one-line guards + observability dependencies on the host. See [Architecture: Container Boundary](architecture.md#container-boundary) for details.
+**Effort:** Minor guards on `in_container_run.sh` + observability dependencies on the host. See [Architecture: Container Boundary](architecture.md#container-boundary) for details.
 
 ## Axis 3: training framework (MaxText → custom JAX code)
 
@@ -94,7 +96,7 @@ The exporter provides infrastructure (state transport, plugin discovery) while p
 |------|------|-----------|-------------|--------------|
 | **Metrics plugin** | **Observe** | **Excellent** | **New `*_metrics_plugin.sh` only** | **Exporter, Prometheus, TSDB, all other plugins** |
 | Scheduler | Launch | Excellent | Orchestration tier only (new files) | Container, training, utilities |
-| Execution env | Launch | Good | `_container.sh` replacement + ~5 guards | Orchestration, training, utilities |
+| Execution env | Launch | Good | `in_container_run.sh` + ~5 guards (mostly done) | Orchestration, training, utilities |
 | Training framework | Launch | Good | Docker image + 2 Python files + configs | Orchestration, utilities |
 | GPU vendor | Launch | Moderate | `train_env.sh` + 1 metrics plugin | Orchestration, container boundary, training code |
 
