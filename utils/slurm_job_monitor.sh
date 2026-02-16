@@ -213,6 +213,12 @@ get_mtime() {
     stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo "0"
 }
 
+# Sanitize text for embedding inside Markdown triple-backtick code blocks.
+# Replaces backticks with single-quotes so they don't prematurely close the block.
+sanitize_for_code_block() {
+    tr '`' "'"
+}
+
 # ============================================================================
 # SLURM JOB FUNCTIONS
 # ============================================================================
@@ -486,7 +492,7 @@ send_hanging_alert() {
 
     # Always send last 10 lines without filter for hanging alerts
     local log_preview
-    log_preview=$(tail -n 10 "$log_file" 2>/dev/null | head -c 400 || echo "")
+    log_preview=$(tail -n 10 "$log_file" 2>/dev/null | head -c 400 | sanitize_for_code_block || echo "")
 
     # Preprocess log preview into formatted section
     local log_section
@@ -580,7 +586,8 @@ send_periodic_log_update() {
     local log_file="$2"
     local num_lines="$3"
     local is_hanging="$4"
-    local log_snapshot_content="$5"
+    local log_snapshot_content
+    log_snapshot_content=$(printf '%s' "$5" | sanitize_for_code_block)
     local log_snapshot_mtime="$6"
     local current_state="$7"  # Add current state parameter
 
