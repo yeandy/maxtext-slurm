@@ -53,6 +53,7 @@ A warning is printed if the path doesn't appear to be on a shared filesystem. Th
 #   submit.sh 70b:exp1 -N 1 -- remat_policy=full            # With tag and MaxText args
 #   submit.sh 70b -N 1 -- _env_NCCL_DEBUG=INFO              # `export NCCL_DEBUG=INFO` before launch
 #   submit.sh 70b -N 1 -- _env_NCCL_DEBUG=INFO steps=1      # Both env and MaxText args
+#   submit.sh 70b -N 1 -- steps=1 _env_ENABLE_XLA_DUMP=1    # HLO IR dump
 #   submit.sh 70b:run-a: -N 1                               # Checkpoint dir alias (see below)
 #   submit.sh 70b:run-a:exp1 -N 1                           # Alias + experiment tag
 #   JOB_WORKSPACE=/shared/maxtext_jobs submit.sh 70b -N 1   # Custom output dir (shared FS)
@@ -216,6 +217,7 @@ Sourced by `_train.sh` before every training launch. Any `export` in this file a
 | Category | Examples |
 |----------|----------|
 | XLA flags | `XLA_FLAGS`, `XLA_PYTHON_CLIENT_MEM_FRACTION` |
+| XLA dump | `ENABLE_XLA_DUMP` (toggle via `_env_ENABLE_XLA_DUMP=1`; see [Performance: HLO IR dump](performance.md#hlo-ir-dump)) |
 | NCCL / RCCL | `NCCL_DEBUG`, `NCCL_CROSS_NIC`, `NCCL_IB_*`, `RCCL_*` |
 | Memory | `XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB` |
 | InfiniBand | `NCCL_IB_QPS_PER_CONNECTION`, `NCCL_IB_TC` |
@@ -233,6 +235,7 @@ submit.sh            70b -N 2 -- _env_NCCL_DEBUG=INFO           # exports NCCL_D
 run_local.sh         70b      -- _env_NCCL_DEBUG=INFO steps=5   # same mechanism, local run
 in_container_run.sh  70b      -- _env_NCCL_DEBUG=INFO steps=5   # same mechanism, inside container
 submit.sh            70b -N 2 -- _env_NCCL_DEBUG=INFO _env_XLA_PYTHON_CLIENT_MEM_FRACTION=.93 remat_policy=full   # multiple
+submit.sh            70b -N 1 -- steps=1 _env_ENABLE_XLA_DUMP=1 # HLO IR dump (see Performance)
 ```
 
 **Example: [`XLA_PYTHON_CLIENT_MEM_FRACTION`](https://docs.jax.dev/en/latest/gpu_memory_allocation.html)** — controls what fraction of GPU memory [JAX](https://jax.dev/) pre-allocates. The default in `train_env.sh` is `.85`, which works for most models. Large models need a higher value:

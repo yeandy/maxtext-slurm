@@ -43,12 +43,17 @@ XLA_FLAGS+=" --xla_gpu_enable_pipelined_reduce_scatter=true"
 export XLA_FLAGS
 BLOCK_COMMENT_TO_USE_DOCKER_IMAGE_DEFAULT_XLA_FLAGS
 
-# ---- XLA dump ----
-#XLA_FLAGS="$XLA_FLAGS --xla_dump_hlo_as_text"
-#XLA_FLAGS="$XLA_FLAGS --xla_dump_hlo_module_re=^jit_train_step$"
-#XLA_FLAGS="$XLA_FLAGS --xla_dump_hlo_pipeline_re='(?i)gpu'"
-#XLA_FLAGS="$XLA_FLAGS --xla_dump_to=/outputs/${JOB_DIR}/xla_dump"
-#export XLA_FLAGS
+# ---- XLA dump (enable via _env_ENABLE_XLA_DUMP=1 in PASSTHROUGH_ARGS) ----
+ENABLE_XLA_DUMP="${ENABLE_XLA_DUMP:-${EXTRACTED_ENV_MAP[ENABLE_XLA_DUMP]:-0}}"
+if [[ "${ENABLE_XLA_DUMP,,}" =~ ^(1|y|yes|true)$ ]]; then
+    echo "[XLA dump] Enabled (ENABLE_XLA_DUMP=$ENABLE_XLA_DUMP)"
+    XLA_FLAGS="${XLA_FLAGS:+$XLA_FLAGS }--xla_dump_hlo_as_text"
+    XLA_FLAGS="$XLA_FLAGS --xla_dump_hlo_module_re=^jit_train_step$"
+    XLA_FLAGS="$XLA_FLAGS --xla_dump_hlo_pipeline_re='(?i)gpu'"
+    XLA_FLAGS="$XLA_FLAGS --xla_dump_to=/outputs/${JOB_DIR}/xla_dump"
+    export XLA_FLAGS
+    echo "[XLA dump] XLA_FLAGS=$XLA_FLAGS"
+fi
 
 # ---- Fix for JAX-0.8.2 ----
 XLA_FLAGS="${XLA_FLAGS:+$XLA_FLAGS }--xla_gpu_enable_command_buffer=''"
