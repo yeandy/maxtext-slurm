@@ -30,32 +30,14 @@ else
   RESERVATION_OPT=()
 fi
 
-# ------- Split script args first -------
-source "$SCRIPT_DIR/utils/split_script_args.sh"
-split_script_args "$@"
-echo "PASSTHROUGH_ARGS=\"${PASSTHROUGH_ARGS[*]}\""
-
-# ------- Parse model spec + experiment tag -------
-source "$SCRIPT_DIR/utils/parse_model_spec.sh"
-parse_model_spec
-
-# ------- Resolve model name -------
-source "$SCRIPT_DIR/utils/resolve_model_name.sh"
-if ! MODEL_NAME=$(resolve_model_name "$SCRIPT_DIR/configs" "$MODEL_NAME"); then
-    echo "!!! Model name resolution failed. Exiting..." >&2
-    exit 1
-fi
+# ------- Parse model spec, resolve name, build JOB_NAME -------
+source "$SCRIPT_DIR/utils/parse_job_args.sh"
 
 echo "MODEL_NAME=$MODEL_NAME"
 [[ -n "$MODEL_NAME_ALIAS" ]] && echo "MODEL_NAME_ALIAS=$MODEL_NAME_ALIAS"
 echo "EXP_TAG=$EXP_TAG"
 echo "SBATCH_ARGS=\"${SBATCH_ARGS[*]}\""
-
-# ------- Build job name -------
-JOB_NAME="JAX-${MODEL_NAME}"
-if [[ -n "$EXP_TAG" ]]; then
-    JOB_NAME="${JOB_NAME}-${EXP_TAG}"
-fi
+echo "PASSTHROUGH_ARGS=\"${PASSTHROUGH_ARGS[*]}\""
 echo "JOB_NAME=$JOB_NAME"
 
 # ------- Slurm settings -------------
