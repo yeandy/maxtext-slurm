@@ -176,14 +176,18 @@ def _compute_stats(values: list[float]) -> tuple[float, float, int]:
     return mean, sd, n
 
 
-def _select_steady_state(all_values: list[float]) -> list[float]:
+def _select_steady_state(all_values: list[float], num_nodes: int = 1) -> list[float]:
     """Return the steady-state measurement window from all step values.
 
-    Skips the first WARMUP_STEPS values (steps 0‑4) and takes up to
-    STEADY_STATE_STEPS values after that (steps 5‑14).
+    Multi-node jobs log one value per node per step, so each logical step
+    occupies ``num_nodes`` consecutive entries.  Skips the first
+    ``WARMUP_STEPS * num_nodes`` values (steps 0‑4) and takes up to
+    ``STEADY_STATE_STEPS * num_nodes`` values after that (steps 5‑14).
     """
-    after_warmup = all_values[WARMUP_STEPS:]
-    return after_warmup[:STEADY_STATE_STEPS]
+    skip = WARMUP_STEPS * num_nodes
+    take = STEADY_STATE_STEPS * num_nodes
+    after_warmup = all_values[skip:]
+    return after_warmup[:take]
 
 
 # ── Core: process one file ───────────────────────────────────────────────────
@@ -243,9 +247,13 @@ def process_file(file: Path, cleanup: bool, force: bool = False) -> int:
         return 2
 
     # ── partition into warmup / steady / tail windows ──
-    warmup = all_values[:WARMUP_STEPS]
-    steady = _select_steady_state(all_values)
-    tail_start = WARMUP_STEPS + STEADY_STATE_STEPS
+    # Multi-node jobs log one value per node per step, so each logical
+    # step has num_nodes entries.  Scale the windows accordingly.
+    warmup_n = WARMUP_STEPS * num_nodes
+    steady_n = STEADY_STATE_STEPS * num_nodes
+    warmup = all_values[:warmup_n]
+    steady = _select_steady_state(all_values, num_nodes)
+    tail_start = warmup_n + steady_n
     tail = all_values[tail_start:] if total_steps > tail_start else []
 
     # ── compute stats for each window ──
@@ -254,34 +262,39 @@ def process_file(file: Path, cleanup: bool, force: bool = False) -> int:
     a_mean, a_sd, a_n = _compute_stats(all_values)
 
     # ── print TGS: all first, then breakdown ──
+    # Display step ranges in logical step numbers (divide by num_nodes)
+    total_logical = total_steps // num_nodes
     print(
         f"  all     TGS={a_mean:.3f}, std={a_sd:.3f}, "
-        f"n={a_n} (steps 0-{a_n - 1})"
+        f"n={a_n} ({total_logical} steps x {num_nodes}N)"
     )
     if w_n > 0:
         print(
             f"    warmup  TGS={w_mean:.3f}, std={w_sd:.3f}, "
-            f"n={w_n} (steps 0-{w_n - 1})"
+            f"n={w_n} (steps 0-{WARMUP_STEPS - 1} x {num_nodes}N)"
         )
     if s_n > 0:
+        s_logical = s_n // num_nodes
         print(
             f"    steady  TGS={s_mean:.3f}, std={s_sd:.3f}, "
-            f"n={s_n}/{STEADY_STATE_STEPS} "
-            f"(steps {WARMUP_STEPS}-{WARMUP_STEPS + s_n - 1})"
+            f"n={s_n}/{STEADY_STATE_STEPS * num_nodes} "
+            f"(steps {WARMUP_STEPS}-{WARMUP_STEPS + s_logical - 1} x {num_nodes}N)"
         )
     else:
-        print(f"    steady  TGS=NA, n=0/{STEADY_STATE_STEPS}")
+        print(f"    steady  TGS=NA, n=0/{STEADY_STATE_STEPS * num_nodes}")
     if tail:
         t_mean, t_sd, t_n = _compute_stats(tail)
+        t_logical_start = WARMUP_STEPS + STEADY_STATE_STEPS
+        t_logical_end = t_logical_start + t_n // num_nodes - 1
         print(
             f"    tail    TGS={t_mean:.3f}, std={t_sd:.3f}, "
-            f"n={t_n} (steps {tail_start}-{tail_start + t_n - 1})"
+            f"n={t_n} (steps {t_logical_start}-{t_logical_end} x {num_nodes}N)"
         )
 
     # ── no steady-state data → error out ──
     if s_n == 0:
         print(
-            f"  {RED}ERROR: only {total_steps} step(s) logged, need "
+            f"  {RED}ERROR: only {total_logical} logical step(s) logged, need "
             f">{WARMUP_STEPS} to have any steady-state data{RESET}"
         )
         print(
@@ -301,10 +314,10 @@ def process_file(file: Path, cleanup: bool, force: bool = False) -> int:
     print(f"  {GREEN}{BOLD}>> Using steady TGS={avg_tgs} for benchmarking result{RESET}")
 
     # ── warnings ──
-    if total_steps < RECOMMENDED_MIN_STEPS:
+    if total_logical < RECOMMENDED_MIN_STEPS:
         print(
-            f"  {YELLOW}WARNING: only {total_steps} total steps "
-            f"({s_n} steady-state); recommend steps >= "
+            f"  {YELLOW}WARNING: only {total_logical} logical steps "
+            f"({s_n // num_nodes} steady-state); recommend steps >= "
             f"{RECOMMENDED_MIN_STEPS} for reliable TGS{RESET}"
         )
 
@@ -317,10 +330,11 @@ def process_file(file: Path, cleanup: bool, force: bool = False) -> int:
         )
 
     # ── check minimum data for renaming ──
-    if s_n < MIN_STEADY_FOR_RENAME:
+    s_logical = s_n // num_nodes if num_nodes else s_n
+    if s_logical < MIN_STEADY_FOR_RENAME:
         print(
             f"  {YELLOW}WARNING: insufficient steady-state data for renaming "
-            f"({s_n}/{MIN_STEADY_FOR_RENAME} required){RESET}"
+            f"({s_logical}/{MIN_STEADY_FOR_RENAME} logical steps required){RESET}"
         )
         print()
         return 0
