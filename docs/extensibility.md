@@ -56,7 +56,7 @@ Each layer communicates with its neighbors through environment variables and cal
 
 **To plug in a different JAX training framework:**
 
-1. Provide the new framework. Two options: build a new Docker image with it pre-installed (update `DOCKER_IMAGE` in `container_env.sh`), or bind-mount the code and `pip install` at startup — viable for pure-Python frameworks whose deps (JAX, Flax, etc.) are already in the base image.
+1. Provide the new framework. Two options: build a new Docker image with it pre-installed (set `DOCKER_IMAGE` via the command line or edit `container_env.sh` — see [Job Submission: `container_env.sh`](job-submission.md#container_envsh-docker-image-and-paths)), or bind-mount the code and `pip install` at startup — viable for pure-Python frameworks whose deps (JAX, Flax, etc.) are already in the base image.
 2. Replace the `MaxText.train.main()` call in `mfu_tracker.py` and `_ray_actor.py` with the new framework's entry point — or make it configurable (e.g., `$TRAIN_MODULE`).
 3. Supply new model config files (replacing `configs/*.gpu.yml`).
 4. Update log-parsing regexes in `tgs_tagger.py` if the new framework's output format differs.

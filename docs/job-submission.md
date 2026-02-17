@@ -57,6 +57,7 @@ A warning is printed if the path doesn't appear to be on a shared filesystem. Th
 #   submit.sh 70b:run-a: -N 1                               # Checkpoint dir alias (see below)
 #   submit.sh 70b:run-a:exp1 -N 1                           # Alias + experiment tag
 #   JOB_WORKSPACE=/shared/maxtext_jobs submit.sh 70b -N 1   # Custom output dir (shared FS)
+#   DOCKER_IMAGE=my/image:tag submit.sh 70b -N 1            # Override Docker image
 ```
 
 `model_name` is resolved by matching against `.gpu.yml` files in `configs/` — only models with an existing config are supported. See [Model Configs: Adding a new config](model-configs.md#adding-a-new-config) to add your own.
@@ -89,7 +90,7 @@ srun -N 1 --exclusive --pty /bin/bash   # get an interactive shell on a compute 
 run_local.sh 70b -- steps=10
 ```
 
-`JOB_WORKSPACE` and `_env_` overrides work the same as with `submit.sh`.
+`JOB_WORKSPACE`, `_env_`, and `container_env.sh` overrides (e.g. `DOCKER_IMAGE=…`) work the same as with `submit.sh`.
 
 ## Inside-container runs (`in_container_run.sh`)
 
@@ -114,7 +115,7 @@ in_container_run.sh 70b -- steps=5                     # quick test
 in_container_run.sh 70b -- steps=5 remat_policy=full   # try a different config
 ```
 
-Environment variables (`JAX_COORDINATOR_IP`, `NNODES`, etc.) default to single-node local values but can be overridden for multi-node setups. `JOB_WORKSPACE` defaults to `/outputs` inside the container or `outputs/` for native runs.
+Environment variables (`JAX_COORDINATOR_IP`, `NNODES`, etc.) default to single-node local values but can be overridden for multi-node setups. `JOB_WORKSPACE` defaults to `/outputs` inside the container or `outputs/` for native runs. `container_env.sh` overrides (e.g. `MAXTEXT_REPO_DIR=…`, `MAXTEXT_PATCH_BRANCH=…`) also work — `DOCKER_IMAGE` and other container-launch settings are ignored since the container is already running.
 
 ## Checkpointing
 
@@ -170,21 +171,52 @@ Training behavior is controlled by two config files and an optional per-run over
 
 | File | What it controls | Edited by users |
 |------|-----------------|-----------------|
-| `container_env.sh` | Docker image, host mount paths, optional hotfix/debug branch | Yes |
+| `container_env.sh` | Docker image, registry, host mount paths, optional hotfix/debug branch. All variables are CLI-overridable (e.g. `DOCKER_IMAGE=… ./submit.sh …`) | Yes |
 | `container_env.local.sh` | Registry credentials (gitignored) | Yes (private images only) |
 | `train_env.sh` | Runtime env vars (XLA, NCCL, ROCm, ...) | Yes |
 | `_env_` prefix | Per-run overrides | Via CLI |
 
-### `container_env.sh` (Docker image & paths)
+### `container_env.sh` (Docker image and paths)
 
-Sourced by `_container.sh` before launching the container (and by `in_container_run.sh` for `MAXTEXT_REPO_DIR` and `MAXTEXT_PATCH_BRANCH`). Defines the image and related settings:
+Sourced by `_container.sh` before launching the container (and by `in_container_run.sh` for `MAXTEXT_REPO_DIR` and `MAXTEXT_PATCH_BRANCH`). All variables use `${VAR:-default}` so they can be **overridden from the command line** without editing the file:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DOCKER_REGISTRY` | `docker.io` | Container registry for pulls |
+| `DOCKER_IMAGE` | `rocm/jax-training:maxtext-v26.1` | Docker image to run |
+| `DOCKER_IMAGE_HAS_AINIC` | `true` | Set to `false` only if you know the image lacks AINIC |
+| `MAXTEXT_REPO_DIR` | `/workspace/maxtext` | MaxText location inside the container |
+| `MAXTEXT_PATCH_BRANCH` | _(empty)_ | Hotfix/debug branch to check out at startup (empty = use image default) |
+| `DATASET_DIR` | `/mnt/vast/datasets` | Host path to datasets (mounted read-only as `/datasets` inside the container) |
+| `COREDUMP_EXTRA_DIRS` | `"/perf_apps/maxtext_coredump"` | Extra coredump directories to probe (comma-separated for CLI; see [Debugging: Core Dumps](debugging.md#where-core-dumps-go)) |
 
 ```bash
-DOCKER_IMAGE="rocm/jax-training:latest"
-DOCKER_IMAGE_HAS_AINIC=true              # set to false only if you know the image lacks AINIC
-MAXTEXT_REPO_DIR="/workspace/maxtext"    # MaxText location inside the container
-MAXTEXT_PATCH_BRANCH=""                  # hotfix/debug branch to check out at startup (empty = use image default)
+# One-off image override
+DOCKER_IMAGE=my/custom:tag ./run_local.sh 70b -- steps=10
+DOCKER_IMAGE=my/custom:tag ./submit.sh 70b -N 1
+
+# Override multiple settings at once
+DOCKER_IMAGE=my/custom:tag DOCKER_IMAGE_HAS_AINIC=false ./run_local.sh 70b -- steps=10
+
+# Override the MaxText branch (works with all entry points)
+MAXTEXT_PATCH_BRANCH=my-hotfix ./submit.sh 70b -N 1
+
+# Override host paths
+DATASET_DIR=/my/datasets ./run_local.sh 70b -- steps=10
+
+# Override coredump dirs (comma-separated for multiple paths)
+COREDUMP_EXTRA_DIRS="/fast-ssd/coredumps,/shared/coredumps" ./submit.sh 70b -N 8
+
+# Override registry (e.g. private mirror)
+DOCKER_REGISTRY=my-registry.example.com ./submit.sh 70b -N 1
+
+# Export once for the session
+export DOCKER_IMAGE=my/custom:tag
+./submit.sh 70b -N 1
+./submit.sh 405b -N 8
 ```
+
+For `submit.sh`, overrides propagate through Slurm automatically: `sbatch` captures the submit-time environment, and `srun --export=ALL` propagates it to all worker nodes.
 
 Both registry images and local `.tar` tarballs are supported. `DOCKER_IMAGE_HAS_AINIC` controls whether the container uses built-in AINIC networking or falls back to host IB mounts. `MAXTEXT_PATCH_BRANCH`, when non-empty, causes `_container.sh` to fetch and check out that hotfix or debug branch inside the container's MaxText repo at startup.
 
@@ -203,12 +235,7 @@ container_env.local.sh
 
 This lets the artifact include the credentials file, making it available to all Slurm worker nodes.
 
-**Host paths to mount.** The same file also defines host paths that are bind-mounted into the container:
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `DATASET_DIR` | `/shared/datasets` | Host path to datasets (mounted read-only as `/datasets` inside the container) |
-| `COREDUMP_EXTRA_DIRS` | `("/shared/coredump")` | Extra coredump directories to probe (beyond `JOB_WORKSPACE`) |
+**Host paths to mount.** `DATASET_DIR` and `COREDUMP_EXTRA_DIRS` (see table above) define host paths that are bind-mounted into the container. Override them from the command line the same way as other variables.
 
 ### `train_env.sh` (runtime variables)
 
