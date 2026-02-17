@@ -35,6 +35,9 @@ RESET = "\033[0m"
 # ── Regex patterns ───────────────────────────────────────────────────────────
 
 RE_TOKENS = re.compile(r"Tokens/s/device:\s*([0-9]+(?:\.[0-9]+)?)")
+RE_STEP_TGS = re.compile(
+    r"completed step:\s*(\d+),.*?Tokens/s/device:\s*([0-9]+(?:\.[0-9]+)?)"
+)
 RE_QUANT = re.compile(r"Config param quantization:\s*(.*)")
 RE_PDBS = re.compile(r"Config param per_device_batch_size:\s*([0-9]+(?:\.[0-9]+)?)")
 RE_TGS_TAG = re.compile(r"(.*[-_]TGS_)[0-9]+(\.[0-9]+)?$")
@@ -232,8 +235,15 @@ def process_file(file: Path, cleanup: bool, force: bool = False) -> int:
     # ── check if job is still running (used by rename and cleanup guards) ──
     running = _is_job_running(text, file)
 
-    # ── extract all Tokens/s/device values ──
-    all_values = [float(m.group(1)) for m in RE_TOKENS.finditer(text)]
+    # ── extract all Tokens/s/device values and step numbers ──
+    matches = [(int(m.group(1)), float(m.group(2))) for m in RE_STEP_TGS.finditer(text)]
+    if not matches:
+        # Fallback: extract TGS values without step numbers
+        all_values = [float(m.group(1)) for m in RE_TOKENS.finditer(text)]
+        all_step_nums = list(range(len(all_values)))
+    else:
+        all_step_nums = [s for s, _ in matches]
+        all_values = [v for _, v in matches]
     total_steps = len(all_values)
 
     if total_steps == 0:
@@ -246,9 +256,12 @@ def process_file(file: Path, cleanup: bool, force: bool = False) -> int:
         print()
         return 2
 
+    # ── deduplicate step numbers to get unique logical steps ──
+    # Multi-node jobs log one value per node per step.
+    unique_steps = sorted(set(all_step_nums))
+
     # ── partition into warmup / steady / tail windows ──
-    # Multi-node jobs log one value per node per step, so each logical
-    # step has num_nodes entries.  Scale the windows accordingly.
+    # Scale windows by num_nodes (each logical step has num_nodes entries).
     warmup_n = WARMUP_STEPS * num_nodes
     steady_n = STEADY_STATE_STEPS * num_nodes
     warmup = all_values[:warmup_n]
@@ -261,34 +274,48 @@ def process_file(file: Path, cleanup: bool, force: bool = False) -> int:
     s_mean, s_sd, s_n = _compute_stats(steady)
     a_mean, a_sd, a_n = _compute_stats(all_values)
 
+    # ── derive actual step ranges from the data ──
+    def _step_range(start_idx: int, end_idx: int) -> str:
+        """Return 'step_first-step_last' from unique_steps by position."""
+        if start_idx >= len(unique_steps):
+            return "?"
+        first = unique_steps[start_idx]
+        last = unique_steps[min(end_idx, len(unique_steps) - 1)]
+        return f"{first}-{last}" if first != last else str(first)
+
+    warmup_range = _step_range(0, WARMUP_STEPS - 1)
+    s_logical = s_n // num_nodes
+    steady_range = _step_range(WARMUP_STEPS, WARMUP_STEPS + s_logical - 1) if s_n > 0 else "—"
+
     # ── print TGS: all first, then breakdown ──
-    # Display step ranges in logical step numbers (divide by num_nodes)
     total_logical = total_steps // num_nodes
+    all_range = _step_range(0, len(unique_steps) - 1)
     print(
         f"  all     TGS={a_mean:.3f}, std={a_sd:.3f}, "
-        f"n={a_n} ({total_logical} steps x {num_nodes}N)"
+        f"n={a_n} ({total_logical} steps x {num_nodes}N, steps {all_range})"
     )
     if w_n > 0:
         print(
             f"    warmup  TGS={w_mean:.3f}, std={w_sd:.3f}, "
-            f"n={w_n} (steps 0-{WARMUP_STEPS - 1} x {num_nodes}N)"
+            f"n={w_n} (steps {warmup_range} x {num_nodes}N)"
         )
     if s_n > 0:
-        s_logical = s_n // num_nodes
         print(
             f"    steady  TGS={s_mean:.3f}, std={s_sd:.3f}, "
             f"n={s_n}/{STEADY_STATE_STEPS * num_nodes} "
-            f"(steps {WARMUP_STEPS}-{WARMUP_STEPS + s_logical - 1} x {num_nodes}N)"
+            f"(steps {steady_range} x {num_nodes}N)"
         )
     else:
         print(f"    steady  TGS=NA, n=0/{STEADY_STATE_STEPS * num_nodes}")
     if tail:
         t_mean, t_sd, t_n = _compute_stats(tail)
-        t_logical_start = WARMUP_STEPS + STEADY_STATE_STEPS
-        t_logical_end = t_logical_start + t_n // num_nodes - 1
+        tail_range = _step_range(
+            WARMUP_STEPS + STEADY_STATE_STEPS,
+            WARMUP_STEPS + STEADY_STATE_STEPS + t_n // num_nodes - 1,
+        )
         print(
             f"    tail    TGS={t_mean:.3f}, std={t_sd:.3f}, "
-            f"n={t_n} (steps {t_logical_start}-{t_logical_end} x {num_nodes}N)"
+            f"n={t_n} (steps {tail_range} x {num_nodes}N)"
         )
 
     # ── no steady-state data → error out ──
