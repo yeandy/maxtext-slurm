@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MaxText Perf Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg: #0d1117; --bg2: #161b22; --bg3: #21262d; --border: #30363d;
+  --fg: #e6edf3; --fg2: #8b949e; --accent: #58a6ff; --green: #3fb950;
+  --yellow: #d29922; --red: #f85149; --purple: #bc8cff;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+}
+[data-theme="light"] {
+  --bg: #ffffff; --bg2: #f6f8fa; --bg3: #e1e4e8; --border: #d0d7de;
+  --fg: #1f2328; --fg2: #656d76; --accent: #0969da; --green: #1a7f37;
+  --yellow: #9a6700; --red: #cf222e; --purple: #8250df;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font); background: var(--bg); color: var(--fg); line-height: 1.5; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Layout */
+.header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; gap: 16px; }
+.header h1 { font-size: 18px; font-weight: 600; }
+.header nav { display: flex; gap: 12px; flex: 1; }
+.header nav a { padding: 4px 12px; border-radius: 6px; font-size: 14px; color: var(--fg2); }
+.header nav a.active, .header nav a:hover { color: var(--fg); background: var(--bg3); }
+.theme-toggle { cursor: pointer; background: none; border: 1px solid var(--border); color: var(--fg2); padding: 4px 10px; border-radius: 6px; font-size: 13px; }
+.main { max-width: 1400px; margin: 0 auto; padding: 24px; }
+
+/* Cards */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
+.card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+.card .label { font-size: 12px; color: var(--fg2); text-transform: uppercase; letter-spacing: 0.5px; }
+.card .value { font-size: 28px; font-weight: 600; margin-top: 4px; }
+.card .sub { font-size: 12px; color: var(--fg2); margin-top: 2px; }
+
+/* Table */
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+th { background: var(--bg2); color: var(--fg2); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer; user-select: none; white-space: nowrap; }
+th:hover { color: var(--fg); }
+th .sort-arrow { font-size: 10px; margin-left: 3px; opacity: 0.4; }
+th .sort-arrow.active { opacity: 1; color: var(--accent); }
+tr:hover td { background: var(--bg2); }
+.num { text-align: right; font-family: var(--mono); font-size: 13px; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+.badge-green { background: rgba(63,185,80,0.15); color: var(--green); }
+.badge-yellow { background: rgba(210,153,34,0.15); color: var(--yellow); }
+.badge-red { background: rgba(248,81,73,0.15); color: var(--red); }
+.badge-gray { background: var(--bg3); color: var(--fg2); }
+input[type="checkbox"] { cursor: pointer; }
+
+/* Tabs */
+.tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 20px; }
+.tab { padding: 8px 16px; cursor: pointer; font-size: 14px; color: var(--fg2); border-bottom: 2px solid transparent; }
+.tab:hover { color: var(--fg); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* Code viewer */
+.code-viewer { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; font-family: var(--mono); font-size: 13px; white-space: pre-wrap; word-break: break-all; max-height: 600px; overflow: auto; line-height: 1.6; }
+
+/* Chart container */
+.chart-box { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.chart-box canvas { max-height: 350px; }
+
+/* Buttons */
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 6px; font-size: 13px; font-weight: 500; border: 1px solid var(--border); background: var(--bg2); color: var(--fg); cursor: pointer; }
+.btn:hover { background: var(--bg3); }
+.btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn-primary:hover { opacity: 0.9; }
+.toolbar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+.toolbar select, .toolbar input[type="text"] { padding: 5px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg2); color: var(--fg); font-size: 13px; }
+.toolbar input[type="text"] { width: 250px; }
+
+/* File tree */
+.file-tree { list-style: none; padding-left: 0; margin: 0; }
+.file-tree .file-tree { padding-left: 20px; }
+.file-item { padding: 4px 8px; font-size: 13px; font-family: var(--mono); border-bottom: 1px solid var(--border); cursor: default; }
+.file-item:hover { background: var(--bg2); }
+.dir-item { padding: 4px 8px; font-size: 13px; cursor: pointer; }
+.dir-item .dir-children { display: none; }
+.dir-item.open > .dir-children { display: block; }
+.dir-item.open > .dir-toggle { transform: rotate(90deg); display: inline-block; }
+.dir-toggle { cursor: pointer; display: inline-block; width: 16px; font-size: 10px; color: var(--fg2); transition: transform 0.15s; }
+.file-size { color: var(--fg2); font-size: 12px; margin-left: 8px; }
+.file-preview pre { border: 1px solid var(--border); border-radius: 4px; padding: 8px; overflow: auto; }
+
+/* Spinner */
+.spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading { text-align: center; padding: 40px; color: var(--fg2); }
+
+/* Compare bars */
+.compare-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .main { padding: 12px; }
+  .cards { grid-template-columns: 1fr 1fr; }
+  .toolbar input[type="text"] { width: 100%; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>MaxText Perf</h1>
+  <nav>
+    <a href="#/" class="nav-link" data-view="dashboard">Dashboard</a>
+    <a href="#/compare" class="nav-link" data-view="compare">Compare</a>
+  </nav>
+  <button class="theme-toggle" onclick="toggleTheme()">Theme</button>
+</div>
+
+<div class="main" id="app">
+  <div class="loading"><div class="spinner"></div><p>Loading...</p></div>
+</div>
+
+<script>
+const API = '';
+let allJobs = [];
+let selectedJobs = new Set();
+let chartInstances = {};
+
+// ── Theme ──
+function toggleTheme() {
+  const t = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', t === 'dark' ? '' : t);
+  localStorage.setItem('theme', t);
+  Object.values(chartInstances).forEach(c => { if(c && !c._destroyed) c.destroy(); });
+  chartInstances = {};
+  route();
+}
+(function initTheme() {
+  const saved = localStorage.getItem('theme');
+  const t = saved !== null ? saved : (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+})();
+
+// ── Fetch helper ──
+async function api(path) {
+  const res = await fetch(API + path);
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+// ── Formatting ──
+function fmt(v, d=1) { return v != null ? Number(v).toFixed(d) : '—'; }
+function fmtSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes/1024).toFixed(1) + ' KB';
+  if (bytes < 1073741824) return (bytes/1048576).toFixed(1) + ' MB';
+  return (bytes/1073741824).toFixed(1) + ' GB';
+}
+function fmtDate(iso) {
+  if (!iso) return '—';
+  try { return new Date(iso).toLocaleDateString(undefined, {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
+  catch { return iso.slice(0,16); }
+}
+
+// ── Chart colors (theme-aware) ──
+function chartColors() {
+  const s = getComputedStyle(document.documentElement);
+  return {
+    fg: s.getPropertyValue('--fg').trim(),
+    fg2: s.getPropertyValue('--fg2').trim(),
+    border: s.getPropertyValue('--border').trim(),
+    accent: s.getPropertyValue('--accent').trim(),
+    green: s.getPropertyValue('--green').trim(),
+    yellow: s.getPropertyValue('--yellow').trim(),
+    red: s.getPropertyValue('--red').trim(),
+    purple: s.getPropertyValue('--purple').trim(),
+  };
+}
+function chartDefaults() {
+  const c = chartColors();
+  return { color: c.fg2, borderColor: c.border };
+}
+
+// ── Router ──
+function route() {
+  const hash = location.hash || '#/';
+  document.querySelectorAll('.nav-link').forEach(a => a.classList.toggle('active', a.getAttribute('href') === hash.split('?')[0]));
+  if (hash.startsWith('#/job/')) renderJobDetail(hash.slice(6));
+  else if (hash.startsWith('#/compare')) renderCompare();
+  else renderDashboard(true);
+}
+window.addEventListener('hashchange', route);
+
+// ── Dashboard View ──
+async function renderDashboard(forceRefresh) {
+  const app = document.getElementById('app');
+  if (!allJobs.length || forceRefresh) {
+    app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+    try {
+      allJobs = await api('/api/jobs');
+    } catch(e) {
+      app.innerHTML = `<p style="color:var(--red)">Failed to load jobs: ${e.message}</p>`;
+      return;
+    }
+    sortJobs();
+  }
+  if (allJobs.length === 0) {
+    app.innerHTML = '<div style="text-align:center;padding:60px;color:var(--fg2)"><h2>No analyzed jobs found</h2><p>Run <code>utils/analyze_job.py</code> on a job first.</p></div>';
+    return;
+  }
+
+  let html = `
+    <div class="toolbar">
+      <input type="text" id="job-search" placeholder="Search jobs..." oninput="filterJobs()" style="padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);width:300px;margin-right:4px">
+      <label style="font-size:13px;color:var(--fg2);margin-right:12px;cursor:pointer"><input type="checkbox" id="job-search-invert" onchange="filterJobs()" style="margin-right:3px;vertical-align:middle">Exclude</label>
+      <button class="btn btn-primary" onclick="compareSelected()">Compare Selected</button>
+      <span style="color:var(--fg2);font-size:13px" id="sel-count"></span>
+    </div>
+    <table id="jobs-table">
+      <thead><tr>
+        <th style="width:30px"><input type="checkbox" onchange="toggleAllCheckboxes(this)"></th>
+        <th data-sort="job_id">Job</th>
+        <th data-sort="model">Model</th>
+        <th data-sort="exp_tag">EXP_TAG</th>
+        <th data-sort="num_nodes" class="num">Nodes</th>
+        <th data-sort="tgs_steady" class="num">Steady TGS</th>
+        <th data-sort="num_steps" class="num">Steps</th>
+        <th data-sort="computation_pct" class="num">Compute%</th>
+        <th data-sort="exposed_comm_pct" class="num">Comm%</th>
+        <th data-sort="idle_pct" class="num">Idle%</th>
+        <th>Artifacts</th>
+        <th data-sort="timestamp">Date</th>
+      </tr></thead>
+      <tbody>`;
+  for (const j of allJobs) {
+    const checked = selectedJobs.has(j.job_id) ? 'checked' : '';
+    html += `<tr>
+      <td><input type="checkbox" value="${j.job_id}" ${checked} onchange="toggleJob(this)"></td>
+      <td><a href="#/job/${j.job_id}">${j.job_id}</a></td>
+      <td>${j.model || '—'}</td>
+      <td>${j.exp_tag || '—'}</td>
+      <td class="num">${j.num_nodes ?? '—'}</td>
+      <td class="num">${fmt(j.tgs_steady, 1)}</td>
+      <td class="num">${j.step_begin != null && j.step_end != null ? j.step_begin + '–' + j.step_end : (j.num_steps ?? '—')}</td>
+      <td class="num">${fmt(j.computation_pct, 1)}</td>
+      <td class="num">${fmt(j.exposed_comm_pct, 1)}</td>
+      <td class="num">${fmt(j.idle_pct, 1)}</td>
+      <td>
+        ${j.has_tracelens ? '<span class="badge badge-green">TraceLens</span> ' : (j.has_xplane ? '<span class="badge badge-gray">xplane</span> ' : '')}
+        ${j.has_hlo ? '<span class="badge badge-green">IRLens</span> ' : ''}
+      </td>
+      <td>${fmtDate(j.timestamp)}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  app.innerHTML = html;
+  updateSelCount();
+  initSortable();
+}
+
+function filterJobs() {
+  const q = (document.getElementById('job-search')?.value || '').toLowerCase().trim();
+  const invert = document.getElementById('job-search-invert')?.checked;
+  document.querySelectorAll('#jobs-table tbody tr').forEach(row => {
+    if (!q) { row.style.display = ''; return; }
+    const match = row.textContent.toLowerCase().includes(q);
+    row.style.display = (invert ? !match : match) ? '' : 'none';
+  });
+}
+function toggleJob(cb) { cb.checked ? selectedJobs.add(cb.value) : selectedJobs.delete(cb.value); updateSelCount(); }
+function toggleAllCheckboxes(cb) {
+  document.querySelectorAll('#jobs-table tbody input[type=checkbox]').forEach(x => { x.checked = cb.checked; cb.checked ? selectedJobs.add(x.value) : selectedJobs.delete(x.value); });
+  updateSelCount();
+}
+function updateSelCount() { const el = document.getElementById('sel-count'); if(el) el.textContent = selectedJobs.size ? `${selectedJobs.size} selected` : ''; }
+function compareSelected() {
+  if (selectedJobs.size < 2) { alert('Select at least 2 jobs to compare'); return; }
+  location.hash = '#/compare?jobs=' + [...selectedJobs].join(',');
+}
+
+// ── Sortable table ──
+let sortCol = 'timestamp', sortAsc = false;
+function sortJobs() {
+  if (!sortCol) return;
+  allJobs.sort((a,b) => {
+    let va = a[sortCol], vb = b[sortCol];
+    if (va == null) return 1; if (vb == null) return -1;
+    if (typeof va === 'string') return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return sortAsc ? va - vb : vb - va;
+  });
+}
+function updateSortArrows() {
+  document.querySelectorAll('#jobs-table th[data-sort]').forEach(th => {
+    const key = th.dataset.sort;
+    let arrow = th.querySelector('.sort-arrow');
+    if (!arrow) { arrow = document.createElement('span'); arrow.className = 'sort-arrow'; th.appendChild(arrow); }
+    if (sortCol === key) {
+      arrow.textContent = sortAsc ? ' \u25B2' : ' \u25BC';
+      arrow.classList.add('active');
+    } else {
+      arrow.textContent = ' \u25B4';
+      arrow.classList.remove('active');
+    }
+  });
+}
+function sortAndRender(key) {
+  if (sortCol === key) sortAsc = !sortAsc; else { sortCol = key; sortAsc = true; }
+  sortJobs();
+  renderDashboard();
+}
+function initSortable() {
+  document.querySelectorAll('#jobs-table th[data-sort]').forEach(th => {
+    th.onclick = () => sortAndRender(th.dataset.sort);
+  });
+  updateSortArrows();
+}
+
+// ── Job Detail View ──
+async function renderJobDetail(jobId) {
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  let data;
+  try { data = await api(`/api/jobs/${jobId}`); } catch(e) {
+    app.innerHTML = `<p style="color:var(--red)">Failed to load job: ${e.message}</p><p><a href="#/">Back to dashboard</a></p>`;
+    return;
+  }
+  const tgs = data.tgs || {};
+  const steady = tgs.steady;
+  const tl = data.tracelens_summary || {};
+  const artifacts = data.artifacts || {};
+
+  let html = `
+    <p style="margin-bottom:16px"><a href="#/">&larr; Dashboard</a></p>
+    <h2 style="margin-bottom:4px">Job ${data.job_id || jobId}${data.job_name ? ' — ' + data.job_name : ''}</h2>
+    <p style="color:var(--fg2);font-size:13px;margin-bottom:20px">${data.model || ''} &middot; ${data.exp_tag ? data.exp_tag + ' &middot; ' : ''}${data.num_nodes || '?'} nodes &middot; ${data.dir_name || ''}</p>
+
+    <div class="cards">
+      <div class="card"><div class="label">Steady TGS</div><div class="value">${fmt(steady?.mean, 1)}</div><div class="sub">std ${fmt(steady?.std, 2)}, n=${steady?.n || 0} (${steady?.range || '—'})</div></div>
+      <div class="card"><div class="label">All TGS</div><div class="value">${fmt(tgs.all?.mean, 1)}</div><div class="sub">std ${fmt(tgs.all?.std, 2)}, n=${tgs.all?.n || 0} (${tgs.all?.range || '—'})</div></div>
+      <div class="card"><div class="label">Compute</div><div class="value" style="color:var(--green)">${fmt(tl.computation_time, 1)}%</div></div>
+      <div class="card"><div class="label">Exposed Comm</div><div class="value" style="color:var(--yellow)">${fmt(tl.exposed_comm_time, 1)}%</div></div>
+      <div class="card"><div class="label">Idle</div><div class="value" style="color:var(--red)">${fmt(tl.idle_time, 1)}%</div></div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab active" data-tab="overview">Overview</div>
+      <div class="tab" data-tab="gpu">TraceLens</div>
+      <div class="tab" data-tab="hlo">IRLens</div>
+      <div class="tab" data-tab="log">Log</div>
+      <div class="tab" data-tab="files">Files</div>
+    </div>
+
+    <div class="tab-content active" id="tc-overview">
+      <div class="chart-box"><canvas id="chart-tgs"></canvas></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div class="chart-box"><canvas id="chart-mfu"></canvas></div>
+        <div class="chart-box"><canvas id="chart-loss"></canvas></div>
+      </div>
+    </div>
+    <div class="tab-content" id="tc-log"><div class="loading"><div class="spinner"></div></div></div>
+    <div class="tab-content" id="tc-hlo">
+      <div class="toolbar">
+        <select id="hlo-op"><option value="all">All ops</option><option value="communication" selected>Communication</option><option value="computation">Computation</option></select>
+        <label><input type="checkbox" id="hlo-name"> Names</label>
+        <label><input type="checkbox" id="hlo-topology"> Topology</label>
+        <label><input type="checkbox" id="hlo-fusion"> Fusion stats</label>
+        <button class="btn" onclick="loadHLO('${jobId}')">Run IRLens</button>
+        <input type="text" id="hlo-search" placeholder="Search IRLens output..." oninput="filterHLO()">
+      </div>
+      <div class="code-viewer" id="hlo-output" style="min-height:200px">Click "Run IRLens" to analyze the HLO IR.</div>
+    </div>
+    <div class="tab-content" id="tc-gpu"><div class="loading"><div class="spinner"></div></div></div>
+    <div class="tab-content" id="tc-files"><div class="loading"><div class="spinner"></div></div></div>`;
+
+  app.innerHTML = html;
+
+  // Tab switching
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.onclick = () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById('tc-' + tab.dataset.tab).classList.add('active');
+      if (tab.dataset.tab === 'log') loadLog(jobId);
+      if (tab.dataset.tab === 'gpu') loadGPU(jobId);
+      if (tab.dataset.tab === 'files') loadFiles(jobId);
+    };
+  });
+
+  // Overview charts
+  loadOverviewCharts(jobId);
+}
+
+async function loadOverviewCharts(jobId) {
+  try {
+    const d = await api(`/api/jobs/${jobId}/tgs-steps`);
+    const c = chartColors();
+    const labels = d.tgs_per_step.map((_, i) => i);
+
+    // TGS chart with warmup/steady shading
+    const tgsCtx = document.getElementById('chart-tgs');
+    if (tgsCtx) {
+      chartInstances.tgs = new Chart(tgsCtx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            label: 'TGS (Tokens/GPU/s)',
+            data: d.tgs_per_step,
+            borderColor: c.accent,
+            backgroundColor: c.accent + '20',
+            fill: true,
+            pointRadius: d.tgs_per_step.length > 50 ? 0 : 3,
+            tension: 0.1,
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            title: { display: true, text: 'TGS per Step', color: c.fg },
+            legend: { labels: { color: c.fg2 } },
+            annotation: undefined,
+          },
+          scales: {
+            x: { title: { display: true, text: 'Step', color: c.fg2 }, ticks: { color: c.fg2 }, grid: { color: c.border } },
+            y: { title: { display: true, text: 'Tokens/GPU/s', color: c.fg2 }, ticks: { color: c.fg2 }, grid: { color: c.border } },
+          }
+        }
+      });
+    }
+
+    // MFU chart
+    if (d.mfu_per_step?.length) {
+      const mfuCtx = document.getElementById('chart-mfu');
+      if (mfuCtx) {
+        chartInstances.mfu = new Chart(mfuCtx, {
+          type: 'line',
+          data: { labels, datasets: [{ label: 'MFU %', data: d.mfu_per_step, borderColor: c.green, pointRadius: d.mfu_per_step.length > 50 ? 0 : 3, tension: 0.1 }] },
+          options: { responsive: true, plugins: { title: { display: true, text: 'MFU per Step', color: c.fg }, legend: { labels: { color: c.fg2 } } }, scales: { x: { ticks: { color: c.fg2 }, grid: { color: c.border } }, y: { ticks: { color: c.fg2 }, grid: { color: c.border } } } }
+        });
+      }
+    }
+
+    // Loss chart
+    if (d.loss_per_step?.length) {
+      const lossCtx = document.getElementById('chart-loss');
+      if (lossCtx) {
+        chartInstances.loss = new Chart(lossCtx, {
+          type: 'line',
+          data: { labels, datasets: [{ label: 'Loss', data: d.loss_per_step, borderColor: c.red, pointRadius: d.loss_per_step.length > 50 ? 0 : 3, tension: 0.1 }] },
+          options: { responsive: true, plugins: { title: { display: true, text: 'Loss per Step', color: c.fg }, legend: { labels: { color: c.fg2 } } }, scales: { x: { ticks: { color: c.fg2 }, grid: { color: c.border } }, y: { ticks: { color: c.fg2 }, grid: { color: c.border } } } }
+        });
+      }
+    }
+  } catch(e) { console.error('Charts error:', e); }
+}
+
+// ── Log tab ──
+let logLoaded = {};
+async function loadLog(jobId) {
+  if (logLoaded[jobId]) return;
+  const el = document.getElementById('tc-log');
+  try {
+    const d = await api(`/api/jobs/${jobId}/log?tail=2000`);
+    el.innerHTML = `<div class="toolbar"><span style="color:var(--fg2);font-size:13px">${d.path} (last 2000 lines)</span></div><div class="code-viewer" style="max-height:700px">${escapeHtml(d.content)}</div>`;
+    logLoaded[jobId] = true;
+  } catch(e) { el.innerHTML = `<p style="color:var(--red)">${e.message}</p>`; }
+}
+
+// ── IRLens tab ──
+let hloRawText = '';
+async function loadHLO(jobId) {
+  const el = document.getElementById('hlo-output');
+  el.textContent = 'Running IRLens...';
+  try {
+    const op = document.getElementById('hlo-op').value;
+    const name = document.getElementById('hlo-name').checked;
+    const topology = document.getElementById('hlo-topology').checked;
+    const fusion = document.getElementById('hlo-fusion').checked;
+    const d = await api(`/api/jobs/${jobId}/hlo?op=${op}&name=${name}&topology=${topology}&fusion_stats=${fusion}`);
+    hloRawText = d.output || d.stderr || 'No output';
+    el.textContent = hloRawText;
+  } catch(e) { el.textContent = 'Error: ' + e.message; }
+}
+function filterHLO() {
+  const q = document.getElementById('hlo-search').value.toLowerCase();
+  const el = document.getElementById('hlo-output');
+  if (!q) { el.textContent = hloRawText; return; }
+  const lines = hloRawText.split('\n');
+  const filtered = lines.filter(l => l.toLowerCase().includes(q));
+  el.textContent = filtered.length ? filtered.join('\n') : '(no matches)';
+}
+
+// ── GPU tab ──
+let gpuLoaded = {};
+async function loadGPU(jobId) {
+  if (gpuLoaded[jobId]) return;
+  const el = document.getElementById('tc-gpu');
+  try {
+    const d = await api(`/api/jobs/${jobId}/tracelens`);
+    const c = chartColors();
+    const avg = d.gpu_averages;
+    const perGpu = d.gpu_per_gpu;
+    const kcat = d.kernel_category;
+    let html = '';
+
+    if (avg) {
+      html += '<div class="chart-box"><canvas id="chart-gpu-pie"></canvas></div>';
+
+      html += '<h3 style="margin:16px 0 8px">GPU Time Summary (per GPU avg)</h3><table><thead><tr><th>Metric</th><th class="num">Time (ms)</th><th class="num">%</th></tr></thead><tbody>';
+      for (const key of ['computation_time','exposed_comm_time','total_comm_time','idle_time','busy_time','total_time']) {
+        const v = avg[key];
+        if (v) html += `<tr><td>${key.replace(/_/g,' ')}</td><td class="num">${v.time_ms.toFixed(1)}</td><td class="num">${v.percent.toFixed(2)}%</td></tr>`;
+      }
+      html += '</tbody></table>';
+    }
+
+    if (kcat?.length) {
+      html += '<h3 style="margin:16px 0 8px">Kernel Time by Category (per GPU)</h3>';
+      html += '<table><thead><tr><th>Category</th><th class="num">Count</th><th class="num">Time/GPU (ms)</th><th class="num">%</th><th class="num">Cumul %</th></tr></thead><tbody>';
+      kcat.forEach(r => {
+        html += `<tr><td>${r.category}</td><td class="num">${r.count}</td><td class="num">${r.time_ms_per_gpu.toFixed(1)}</td><td class="num">${r.percent.toFixed(1)}%</td><td class="num">${r.cumulative_percent.toFixed(1)}%</td></tr>`;
+      });
+      html += '</tbody></table>';
+    }
+
+    if (perGpu?.length) {
+      html += '<h3 style="margin:16px 0 8px">Per-GPU Breakdown</h3>';
+      html += '<div class="chart-box"><canvas id="chart-gpu-bars"></canvas></div>';
+      html += '<table><thead><tr><th>GPU</th><th class="num">Compute %</th><th class="num">Exposed Comm %</th><th class="num">Idle %</th></tr></thead><tbody>';
+      perGpu.forEach((g, i) => {
+        html += `<tr><td>GPU ${i} (${g.gpu_pid})</td><td class="num">${(g.computation_time||0).toFixed(2)}%</td><td class="num">${(g.exposed_comm_time||0).toFixed(2)}%</td><td class="num">${(g.idle_time||0).toFixed(2)}%</td></tr>`;
+      });
+      html += '</tbody></table>';
+    }
+
+    if (!avg && !perGpu && !kcat) {
+      html = '<p style="color:var(--fg2);padding:20px">No TraceLens data available. Run analyze_job.py with profiler traces.</p>';
+    }
+    html += `<p style="color:var(--fg2);font-size:12px;margin-top:12px">CSV files: ${(d.csv_files||[]).join(', ') || 'none'}</p>`;
+    el.innerHTML = html;
+
+    // Pie chart
+    if (avg) {
+      const comp = avg.computation_time?.percent || 0;
+      const comm = avg.exposed_comm_time?.percent || 0;
+      const idle = avg.idle_time?.percent || 0;
+      const pieCtx = document.getElementById('chart-gpu-pie');
+      if (pieCtx) {
+        chartInstances.gpuPie = new Chart(pieCtx, {
+          type: 'doughnut',
+          data: {
+            labels: ['Compute', 'Exposed Comm', 'Idle'],
+            datasets: [{ data: [comp, comm, idle], backgroundColor: [c.green, c.yellow, c.red] }]
+          },
+          options: { responsive: true, plugins: { title: { display: true, text: 'GPU Time Breakdown (Average)', color: c.fg }, legend: { labels: { color: c.fg2 } } } }
+        });
+      }
+    }
+
+    // Per-GPU bar chart
+    if (perGpu?.length) {
+      const gpuLabels = perGpu.map((g, i) => `GPU ${i}`);
+      const compData = perGpu.map(g => g.computation_time || 0);
+      const commData = perGpu.map(g => g.exposed_comm_time || 0);
+      const idleData = perGpu.map(g => g.idle_time || 0);
+      const barCtx = document.getElementById('chart-gpu-bars');
+      if (barCtx) {
+        chartInstances.gpuBars = new Chart(barCtx, {
+          type: 'bar',
+          data: {
+            labels: gpuLabels,
+            datasets: [
+              { label: 'Compute', data: compData, backgroundColor: c.green },
+              { label: 'Exposed Comm', data: commData, backgroundColor: c.yellow },
+              { label: 'Idle', data: idleData, backgroundColor: c.red },
+            ]
+          },
+          options: { responsive: true, plugins: { title: { display: true, text: 'Per-GPU Time Breakdown', color: c.fg }, legend: { labels: { color: c.fg2 } } }, scales: { x: { stacked: true, ticks: { color: c.fg2 }, grid: { color: c.border } }, y: { stacked: true, ticks: { color: c.fg2 }, grid: { color: c.border } } } }
+        });
+      }
+    }
+    gpuLoaded[jobId] = true;
+  } catch(e) { el.innerHTML = `<p style="color:var(--fg2);padding:20px">No TraceLens data: ${e.message}</p>`; }
+}
+
+// ── Files tab ──
+let filesLoaded = {};
+function buildFileTree(files) {
+  const root = {};
+  for (const f of files) {
+    const parts = f.path.split('/');
+    let node = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!node[parts[i]]) node[parts[i]] = {};
+      node = node[parts[i]];
+    }
+    node[parts[parts.length - 1]] = f;
+  }
+  return root;
+}
+function renderTree(node, jobId) {
+  let html = '<ul class="file-tree">';
+  const entries = Object.keys(node).sort((a, b) => {
+    const aIsDir = typeof node[a] === 'object' && !node[a].path;
+    const bIsDir = typeof node[b] === 'object' && !node[b].path;
+    if (aIsDir !== bIsDir) return aIsDir ? -1 : 1;
+    return a.localeCompare(b);
+  });
+  for (const name of entries) {
+    const val = node[name];
+    const isFile = val && val.path;
+    if (isFile) {
+      const f = val;
+      const ext = name.split('.').pop().toLowerCase();
+      const previewable = ['txt','log','csv','json','py','sh','md','yaml','yml','toml','cfg','out'].includes(ext);
+      const isXplane = name.endsWith('.xplane.pb');
+      const perfetto = isXplane ? ` <a href="https://ui.perfetto.dev/#!/?url=${encodeURIComponent(location.origin + '/api/jobs/' + jobId + '/files/' + f.path)}" target="_blank" class="badge badge-green" onclick="event.stopPropagation()">Perfetto</a>` : '';
+      const download = ` <a href="/api/jobs/${jobId}/files/${f.path}" download class="badge badge-gray" onclick="event.stopPropagation()">download</a>`;
+      if (previewable) {
+        html += `<li class="file-item" onclick="event.stopPropagation();previewFile('${jobId}','${f.path}',this)"> ${name}${perfetto}${download}<span class="file-size">${fmtSize(f.size)}</span><div class="file-preview" style="display:none"></div></li>`;
+      } else {
+        html += `<li class="file-item" onclick="event.stopPropagation()"> <a href="/api/jobs/${jobId}/files/${f.path}" download>${name}</a>${perfetto}<span class="file-size">${fmtSize(f.size)}</span></li>`;
+      }
+    } else {
+      const count = countFiles(val);
+      html += `<li class="dir-item" onclick="event.stopPropagation();this.classList.toggle('open')"><span class="dir-toggle">▶</span> <strong>${name}/</strong> <span class="file-size">(${count} files)</span><div class="dir-children">${renderTree(val, jobId)}</div></li>`;
+    }
+  }
+  html += '</ul>';
+  return html;
+}
+function countFiles(node) {
+  let n = 0;
+  for (const k of Object.keys(node)) {
+    const v = node[k];
+    n += (v && v.path) ? 1 : countFiles(v);
+  }
+  return n;
+}
+async function previewFile(jobId, path, li) {
+  const div = li.querySelector('.file-preview');
+  if (div.style.display !== 'none') { div.style.display = 'none'; return; }
+  div.style.display = 'block';
+  if (div.dataset.loaded) return;
+  div.innerHTML = '<em>Loading...</em>';
+  try {
+    const resp = await fetch(`/api/jobs/${jobId}/files/${path}`);
+    let text = await resp.text();
+    if (text.length > 50000) text = text.slice(0, 50000) + '\n\n... (truncated at 50KB) ...';
+    div.innerHTML = `<pre class="code-viewer" style="max-height:400px;margin:8px 0 0;font-size:12px">${escapeHtml(text)}</pre>`;
+    div.dataset.loaded = '1';
+  } catch(e) { div.innerHTML = `<em style="color:var(--red)">Failed: ${e.message}</em>`; }
+}
+async function loadFiles(jobId) {
+  if (filesLoaded[jobId]) return;
+  const el = document.getElementById('tc-files');
+  try {
+    const d = await api(`/api/jobs/${jobId}/files`);
+    const tree = buildFileTree(d.files);
+    let html = `<div class="toolbar"><a class="btn btn-primary" href="/api/jobs/${jobId}/download">Download All (ZIP)</a><span style="color:var(--fg2);font-size:13px;margin-left:12px">${d.files.length} files</span></div>`;
+    html += renderTree(tree, jobId);
+    el.innerHTML = html;
+    filesLoaded[jobId] = true;
+  } catch(e) { el.innerHTML = `<p style="color:var(--red)">${e.message}</p>`; }
+}
+
+// ── Compare View ──
+async function renderCompare() {
+  const app = document.getElementById('app');
+  const params = new URLSearchParams(location.hash.split('?')[1] || '');
+  const jobIds = (params.get('jobs') || '').split(',').filter(Boolean);
+
+  if (jobIds.length < 2) {
+    app.innerHTML = '<p style="padding:40px;color:var(--fg2)">Select 2+ jobs from the <a href="#/">Dashboard</a> and click "Compare Selected".</p>';
+    return;
+  }
+
+  app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  try {
+    const data = await api(`/api/compare?jobs=${jobIds.join(',')}`);
+    const c = chartColors();
+    const valid = data.filter(d => !d.error);
+
+    let html = '<p style="margin-bottom:16px"><a href="#/">&larr; Dashboard</a></p><h2 style="margin-bottom:20px">Compare Jobs</h2>';
+
+    // TGS bar chart
+    html += '<div class="compare-grid"><div class="chart-box"><canvas id="chart-cmp-tgs"></canvas></div>';
+    // GPU util bar chart
+    html += '<div class="chart-box"><canvas id="chart-cmp-gpu"></canvas></div></div>';
+
+    // Comparison table
+    html += '<table style="margin-top:20px"><thead><tr><th>Metric</th>';
+    valid.forEach(j => html += `<th><a href="#/job/${j.job_id}">${j.job_id}</a></th>`);
+    html += '</tr></thead><tbody>';
+    const rows = [
+      ['Model', j => j.model || '—'],
+      ['EXP_TAG', j => j.exp_tag || '—'],
+      ['Nodes', j => j.num_nodes ?? '—'],
+      ['Steady TGS', j => fmt(j.tgs_steady, 1)],
+      ['All TGS', j => fmt(j.tgs_all, 1)],
+      ['Steps', j => j.step_begin != null && j.step_end != null ? j.step_begin + '–' + j.step_end : (j.num_steps ?? '—')],
+      ['Compute %', j => fmt(j.computation_pct, 1)],
+      ['Exposed Comm %', j => fmt(j.exposed_comm_pct, 1)],
+      ['Idle %', j => fmt(j.idle_pct, 1)],
+    ];
+    rows.forEach(([label, fn]) => {
+      html += `<tr><td><strong>${label}</strong></td>`;
+      valid.forEach(j => html += `<td class="num">${fn(j)}</td>`);
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+
+    // TGS overlay chart
+    html += '<div class="chart-box" style="margin-top:20px"><canvas id="chart-cmp-tgs-line"></canvas></div>';
+
+    app.innerHTML = html;
+
+    // TGS comparison bars
+    const tgsCtx = document.getElementById('chart-cmp-tgs');
+    if (tgsCtx) {
+      new Chart(tgsCtx, {
+        type: 'bar',
+        data: {
+          labels: valid.map(j => j.job_id),
+          datasets: [{ label: 'Steady TGS', data: valid.map(j => j.tgs_steady), backgroundColor: c.accent }]
+        },
+        options: { responsive: true, plugins: { title: { display: true, text: 'Steady-State TGS Comparison', color: c.fg }, legend: { display: false } }, scales: { x: { ticks: { color: c.fg2 }, grid: { color: c.border } }, y: { ticks: { color: c.fg2 }, grid: { color: c.border } } } }
+      });
+    }
+
+    // GPU util comparison
+    const gpuCtx = document.getElementById('chart-cmp-gpu');
+    if (gpuCtx && valid.some(j => j.computation_pct != null)) {
+      new Chart(gpuCtx, {
+        type: 'bar',
+        data: {
+          labels: valid.map(j => j.job_id),
+          datasets: [
+            { label: 'Compute', data: valid.map(j => j.computation_pct || 0), backgroundColor: c.green },
+            { label: 'Exposed Comm', data: valid.map(j => j.exposed_comm_pct || 0), backgroundColor: c.yellow },
+            { label: 'Idle', data: valid.map(j => j.idle_pct || 0), backgroundColor: c.red },
+          ]
+        },
+        options: { responsive: true, plugins: { title: { display: true, text: 'GPU Utilization Comparison', color: c.fg }, legend: { labels: { color: c.fg2 } } }, scales: { x: { stacked: true, ticks: { color: c.fg2 }, grid: { color: c.border } }, y: { stacked: true, ticks: { color: c.fg2 }, grid: { color: c.border } } } }
+      });
+    }
+
+    // TGS per-step overlay
+    const lineCtx = document.getElementById('chart-cmp-tgs-line');
+    if (lineCtx) {
+      const colors = [c.accent, c.green, c.yellow, c.red, c.purple];
+      const maxSteps = Math.max(...valid.map(j => (j.tgs_per_step||[]).length));
+      const labels = Array.from({length: maxSteps}, (_, i) => i);
+      new Chart(lineCtx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: valid.map((j, i) => ({
+            label: j.job_id,
+            data: j.tgs_per_step || [],
+            borderColor: colors[i % colors.length],
+            pointRadius: 0,
+            tension: 0.1,
+          }))
+        },
+        options: { responsive: true, plugins: { title: { display: true, text: 'TGS per Step (Overlay)', color: c.fg }, legend: { labels: { color: c.fg2 } } }, scales: { x: { title: { display: true, text: 'Step', color: c.fg2 }, ticks: { color: c.fg2 }, grid: { color: c.border } }, y: { title: { display: true, text: 'TGS', color: c.fg2 }, ticks: { color: c.fg2 }, grid: { color: c.border } } } }
+      });
+    }
+  } catch(e) { app.innerHTML = `<p style="color:var(--red)">${e.message}</p>`; }
+}
+
+// ── Utility ──
+function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// ── Init ──
+route();
+</script>
+</body>
+</html>
