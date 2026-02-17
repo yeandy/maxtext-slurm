@@ -10,7 +10,11 @@ Workflows for diagnosing training job failures. For system-level and training me
 
 Core dumps are written to the first directory with >500 GB free, checked in order: the per-job output directory, the outputs root (`$JOB_WORKSPACE/`), then any paths in `COREDUMP_EXTRA_DIRS` (configured in `container_env.sh`). The selected directory is bind-mounted as `/coredump` inside the container.
 
-To add a cluster-specific coredump directory, append it to `COREDUMP_EXTRA_DIRS` in `container_env.sh`.
+To add a cluster-specific coredump directory, either edit `COREDUMP_EXTRA_DIRS` in `container_env.sh` or override it from the command line (comma-separated for multiple paths):
+
+```bash
+COREDUMP_EXTRA_DIRS="/fast-ssd/coredumps,/shared/coredumps" ./submit.sh 70b -N 8
+```
 
 Core dumps are enabled automatically — no manual setup required. Notes:
 
@@ -63,7 +67,13 @@ debug_repro.sh
 gdb python3 "$(ls -t $COREDUMP_DIR/core*py* | head -n1)"
 ```
 
-If you need to use a different Docker image for debugging, update `DOCKER_IMAGE` in `container_env.sh`. For private images, see [Job Submission: `container_env.sh`](job-submission.md#container_envsh-docker-image-paths) for credential setup.
+If you need to use a different Docker image for debugging, override it from the command line or edit `container_env.sh`:
+
+```bash
+DOCKER_IMAGE=my/debug-image:tag run_local.sh
+```
+
+For private images, see [Job Submission: `container_env.sh`](job-submission.md#container_envsh-docker-image-and-paths) for credential setup.
 
 ## Unresponsive nodes
 

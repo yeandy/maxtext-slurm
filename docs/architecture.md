@@ -12,6 +12,7 @@ _job.sbatch                         │                         │
     │                               │                         │
     └──► _container.sh ◄────────────┘                         │
               │  (sources container_env.sh)                   │
+              │  (env overrides: DOCKER_IMAGE=… etc.)         │
               │  (launches Docker/Podman)                     │
               │                                               │
               └──────────────────────┬────────────────────────┘
@@ -103,7 +104,7 @@ Before training starts, `_job.sbatch` runs per-host preflight checks (`preflight
 
 ## Container boundary
 
-The default path runs training inside a container (Docker or Podman, auto-detected), with coupling confined to `_container.sh`. `in_container_run.sh` provides an alternative that bypasses the container launch entirely — for use when already inside the container or any environment with JAX pre-installed. Everything upstream (`submit.sh`, `_job.sbatch`, `run_local.sh`) and downstream (`_train.sh`, `train_env.sh`) is container-agnostic. See [Extensibility: Execution Environment](extensibility.md#axis-2-execution-environment-container--native) for adaptation paths.
+The default path runs training inside a container (Docker or Podman, auto-detected), with coupling confined to `_container.sh`. Container settings (image, registry, host mount paths, hotfix branch) are defined in `container_env.sh`; all variables use `${VAR:-default}` and can be overridden from the command line (e.g. `DOCKER_IMAGE=my/image:tag ./submit.sh ...`). See [Job Submission: `container_env.sh`](job-submission.md#container_envsh-docker-image-and-paths) for the full variable reference. `in_container_run.sh` provides an alternative that bypasses the container launch entirely — for use when already inside the container or any environment with JAX pre-installed. Everything upstream (`submit.sh`, `_job.sbatch`, `run_local.sh`) and downstream (`_train.sh`, `train_env.sh`) is container-agnostic. See [Extensibility: Execution Environment](extensibility.md#axis-2-execution-environment-container--native) for adaptation paths.
 
 ## Orchestrator extensibility
 
