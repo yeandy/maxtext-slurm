@@ -107,7 +107,7 @@ A common workflow is to enter the container interactively, then iterate:
 
 ```bash
 # On the host:
-run_local.sh                          # drop into an interactive container shell
+run_local.sh                                           # drop into an interactive container shell
 
 # Inside the container:
 in_container_run.sh 70b -- steps=5                     # quick test
@@ -234,7 +234,8 @@ Any argument after `--` that starts with `_env_` is treated as an environment va
 submit.sh            70b -N 2 -- _env_NCCL_DEBUG=INFO           # exports NCCL_DEBUG=INFO
 run_local.sh         70b      -- _env_NCCL_DEBUG=INFO steps=5   # same mechanism, local run
 in_container_run.sh  70b      -- _env_NCCL_DEBUG=INFO steps=5   # same mechanism, inside container
-submit.sh            70b -N 2 -- _env_NCCL_DEBUG=INFO _env_XLA_PYTHON_CLIENT_MEM_FRACTION=.93 remat_policy=full   # multiple
+# Multiple overrides and MaxText args in one command:
+submit.sh            70b -N 2 -- _env_NCCL_DEBUG=INFO _env_XLA_PYTHON_CLIENT_MEM_FRACTION=.93 remat_policy=full
 submit.sh            70b -N 1 -- steps=1 _env_ENABLE_XLA_DUMP=1 # HLO IR dump (see Performance)
 ```
 

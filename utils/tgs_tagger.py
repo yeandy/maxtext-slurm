@@ -21,12 +21,15 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # ── ANSI colors ──────────────────────────────────────────────────────────────
 
 RED = "\033[31m"
 YELLOW = "\033[33m"
+GREEN = "\033[32m"
+BOLD = "\033[1m"
 RESET = "\033[0m"
 
 # ── Regex patterns ───────────────────────────────────────────────────────────
@@ -36,6 +39,7 @@ RE_QUANT = re.compile(r"Config param quantization:\s*(.*)")
 RE_PDBS = re.compile(r"Config param per_device_batch_size:\s*([0-9]+(?:\.[0-9]+)?)")
 RE_TGS_TAG = re.compile(r"(.*[-_]TGS_)[0-9]+(\.[0-9]+)?$")
 RE_JOB_ID = re.compile(r"^([^-]+)-")
+RE_JOB_SUMMARY = re.compile(r"^=+ JOB SUMMARY =+", re.MULTILINE)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -91,6 +95,47 @@ def _cleanup_prompt(file: Path, cleanup: bool) -> None:
         file.unlink()
 
 
+def _is_job_running(text: str, file: Path) -> bool:
+    """Detect whether the job that produced this log is still running.
+
+    Detection logic:
+      1. JOB SUMMARY block present → job finished.  Written by an EXIT trap
+         that fires on normal exit, error exit, and SIGTERM (scancel).
+         Only SIGKILL (OOM killer, kill -9) bypasses the trap.
+      2. No JOB SUMMARY + file modified within the last 900 s (15 min) →
+         likely still running.  The generous window accommodates long
+         checkpoint writes (~10 min for 70b+ models) plus step time.
+      3. No JOB SUMMARY + file is stale → hard-killed or orphaned; treat
+         as finished so it can still be renamed.
+    """
+    # JOB SUMMARY is the definitive "done" signal.
+    if RE_JOB_SUMMARY.search(text):
+        return False
+
+    # No summary — check how recently the file was written to.
+    # 900 s (15 min) accommodates long checkpoint writes (70b+ models
+    # can take ~10 min) plus step time and I/O variance.
+    try:
+        age = time.time() - file.stat().st_mtime
+        if age < 900:
+            return True
+    except OSError:
+        pass
+
+    return False
+
+
+# ── Constants ────────────────────────────────────────────────────────────────
+
+# Steps 0‑4 are unstable (XLA compilation, profiler warm-up, etc.)
+WARMUP_STEPS = 5
+# Steps 5‑14 form the steady-state measurement window (10 steps)
+STEADY_STATE_STEPS = 10
+# Recommended minimum: WARMUP_STEPS + STEADY_STATE_STEPS = 15
+RECOMMENDED_MIN_STEPS = WARMUP_STEPS + STEADY_STATE_STEPS
+# Minimum steady-state data points required before renaming
+MIN_STEADY_FOR_RENAME = 5
+
 # ── Extraction & stats ───────────────────────────────────────────────────────
 
 
@@ -103,11 +148,12 @@ def _extract_quantization(text: str) -> str:
     # Handle enum format: QuantizationType.FP8 → FP8
     if "." in raw:
         raw = raw.rsplit(".", 1)[-1]
-    # Strip quotes and special chars, sanitize for filenames
-    for ch in "\"'`":
-        raw = raw.replace(ch, "")
-    raw = raw.replace("/", "-")
-    return "" if raw in ("NONE", "") else raw
+    # Keep only filename-safe characters (alphanumeric, hyphen, underscore)
+    raw = re.sub(r"[^A-Za-z0-9_-]", "", raw)
+    # Filter out non-quantization defaults (class names with no actual quant type)
+    if not raw or raw in ("NONE", "IntQuantization"):
+        return ""
+    return raw
 
 
 def _extract_per_device_batch_size(text: str) -> str:
@@ -116,21 +162,28 @@ def _extract_per_device_batch_size(text: str) -> str:
     return m.group(1) if m else ""
 
 
-def _compute_stats(
-    values: list[float], need: int
-) -> tuple[float, float, int, int, float]:
-    """Compute TGS stats on the last min(need, len(values)) entries.
+def _compute_stats(values: list[float]) -> tuple[float, float, int]:
+    """Compute TGS stats on the provided values.
 
-    Returns (mean, std, n_used, below_95_count, threshold_95).
+    Returns (mean, std, n).
     """
-    use = min(len(values), need)
-    tail = values[-use:]
-    mean = sum(tail) / use
-    var = max(sum(v * v for v in tail) / use - mean * mean, 0.0)
+    n = len(values)
+    if n == 0:
+        return 0.0, 0.0, 0
+    mean = sum(values) / n
+    var = max(sum(v * v for v in values) / n - mean * mean, 0.0)
     sd = math.sqrt(var)
-    threshold = 0.95 * mean
-    below = sum(1 for v in tail if v < threshold)
-    return mean, sd, use, below, threshold
+    return mean, sd, n
+
+
+def _select_steady_state(all_values: list[float]) -> list[float]:
+    """Return the steady-state measurement window from all step values.
+
+    Skips the first WARMUP_STEPS values (steps 0‑4) and takes up to
+    STEADY_STATE_STEPS values after that (steps 5‑14).
+    """
+    after_warmup = all_values[WARMUP_STEPS:]
+    return after_warmup[:STEADY_STATE_STEPS]
 
 
 # ── Core: process one file ───────────────────────────────────────────────────
@@ -139,7 +192,7 @@ def _compute_stats(
 _LOG_SUFFIXES = {".log", ".out"}
 
 
-def process_file(file: Path, cleanup: bool) -> int:
+def process_file(file: Path, cleanup: bool, force: bool = False) -> int:
     """Process a single .log/.out file. Returns an exit-status int."""
 
     print(f"Parsed {file}")
@@ -171,39 +224,120 @@ def process_file(file: Path, cleanup: bool) -> int:
             break
     if num_nodes is None:
         return fail("NNODES=<int> not found in log header", rc=3)
-    need = num_nodes * 10
-    min_for_rename = num_nodes * 5
+
+    # ── check if job is still running (used by rename and cleanup guards) ──
+    running = _is_job_running(text, file)
 
     # ── extract all Tokens/s/device values ──
     all_values = [float(m.group(1)) for m in RE_TOKENS.finditer(text)]
-    total_available = len(all_values)
+    total_steps = len(all_values)
 
-    if total_available == 0:
-        print(f"  TGS=NA, std=NA, n=0/{need}")
+    if total_steps == 0:
+        print(f"  TGS=NA, std=NA, n=0/{RECOMMENDED_MIN_STEPS}")
         print(f"  {RED}ERROR: no Tokens/s/device lines found{RESET}")
-        _cleanup_prompt(file, cleanup)
+        if running and not force:
+            print(f"  {YELLOW}(job appears to still be running, use -f to override){RESET}")
+        else:
+            _cleanup_prompt(file, cleanup)
         print()
         return 2
 
-    # ── compute stats ──
-    mean, sd, n_used, below95, threshold = _compute_stats(all_values, need)
-    avg_tgs = f"{mean:.3f}"
+    # ── partition into warmup / steady / tail windows ──
+    warmup = all_values[:WARMUP_STEPS]
+    steady = _select_steady_state(all_values)
+    tail_start = WARMUP_STEPS + STEADY_STATE_STEPS
+    tail = all_values[tail_start:] if total_steps > tail_start else []
 
-    print(f"  TGS={avg_tgs}, std={sd:.3f}, n={n_used}/{need}")
+    # ── compute stats for each window ──
+    w_mean, w_sd, w_n = _compute_stats(warmup)
+    s_mean, s_sd, s_n = _compute_stats(steady)
+    a_mean, a_sd, a_n = _compute_stats(all_values)
+
+    # ── print TGS: all first, then breakdown ──
+    print(
+        f"  all     TGS={a_mean:.3f}, std={a_sd:.3f}, "
+        f"n={a_n} (steps 0-{a_n - 1})"
+    )
+    if w_n > 0:
+        print(
+            f"    warmup  TGS={w_mean:.3f}, std={w_sd:.3f}, "
+            f"n={w_n} (steps 0-{w_n - 1})"
+        )
+    if s_n > 0:
+        print(
+            f"    steady  TGS={s_mean:.3f}, std={s_sd:.3f}, "
+            f"n={s_n}/{STEADY_STATE_STEPS} "
+            f"(steps {WARMUP_STEPS}-{WARMUP_STEPS + s_n - 1})"
+        )
+    else:
+        print(f"    steady  TGS=NA, n=0/{STEADY_STATE_STEPS}")
+    if tail:
+        t_mean, t_sd, t_n = _compute_stats(tail)
+        print(
+            f"    tail    TGS={t_mean:.3f}, std={t_sd:.3f}, "
+            f"n={t_n} (steps {tail_start}-{tail_start + t_n - 1})"
+        )
+
+    # ── no steady-state data → error out ──
+    if s_n == 0:
+        print(
+            f"  {RED}ERROR: only {total_steps} step(s) logged, need "
+            f">{WARMUP_STEPS} to have any steady-state data{RESET}"
+        )
+        print(
+            f"  {YELLOW}HINT: set steps >= {RECOMMENDED_MIN_STEPS} "
+            f"(first {WARMUP_STEPS} are warmup, "
+            f"next {STEADY_STATE_STEPS} are measured){RESET}"
+        )
+        if running and not force:
+            print(f"  {YELLOW}(job appears to still be running, use -f to override){RESET}")
+        else:
+            _cleanup_prompt(file, cleanup)
+        print()
+        return 2
+
+    # Official value for renaming
+    avg_tgs = f"{s_mean:.3f}"
+    print(f"  {GREEN}{BOLD}>> Using steady TGS={avg_tgs} for benchmarking result{RESET}")
+
+    # ── warnings ──
+    if total_steps < RECOMMENDED_MIN_STEPS:
+        print(
+            f"  {YELLOW}WARNING: only {total_steps} total steps "
+            f"({s_n} steady-state); recommend steps >= "
+            f"{RECOMMENDED_MIN_STEPS} for reliable TGS{RESET}"
+        )
+
+    threshold = 0.95 * s_mean
+    below95 = sum(1 for v in steady if v < threshold)
     if below95 > 0:
         print(
-            f"  {RED}ERROR: {below95} of {n_used} are below 95% "
-            f"({threshold:.3f}) of TGS ({avg_tgs}){RESET}"
+            f"  {YELLOW}WARNING: {below95} of {s_n} steady-state steps "
+            f"are below 95% ({threshold:.3f}) of steady TGS ({avg_tgs}){RESET}"
         )
 
     # ── check minimum data for renaming ──
-    if total_available < min_for_rename:
+    if s_n < MIN_STEADY_FOR_RENAME:
         print(
-            f"  {YELLOW}WARNING: insufficient data for renaming "
-            f"({total_available}/{min_for_rename} required){RESET}"
+            f"  {YELLOW}WARNING: insufficient steady-state data for renaming "
+            f"({s_n}/{MIN_STEADY_FOR_RENAME} required){RESET}"
         )
         print()
         return 0
+
+    # ── skip rename if job is still running ──
+    if running:
+        if not force:
+            print(
+                f"  {YELLOW}WARNING: job appears to still be running, "
+                f"skipping rename (use -f to override){RESET}"
+            )
+            print()
+            return 0
+        print(
+            f"  {YELLOW}WARNING: job appears to still be running, "
+            f"forcing rename (-f){RESET}"
+        )
 
     # ── build new name ──
     directory = file.parent
@@ -223,19 +357,53 @@ def process_file(file: Path, cleanup: bool) -> int:
     new_path = directory / f"{new_noext}{file.suffix}"
 
     # ── rename file (skip no-op) ──
-    if file.resolve() != new_path.resolve():
+    renamed_file = file.resolve() != new_path.resolve()
+    if renamed_file:
         file.rename(new_path)
         print(f"  renamed to {new_path}")
 
     # ── rename job folder ──
+    # Skip directory rename while the job is running — the training process
+    # writes checkpoints, profiles, and TensorBoard events by path.
+    # Renaming the directory would break those writes.  The log file rename
+    # above is safe (processes write via fd, which follows the inode).
+    # Run tgs_tagger again after the job finishes to rename the directory.
+    final_folder: Path | None = None
     job_id_m = RE_JOB_ID.match(file.name)
     if job_id_m:
         job_folder = _find_job_folder(directory, job_id_m.group(1))
         if job_folder:
             new_folder = directory / new_noext
             if job_folder.resolve() != new_folder.resolve():
-                job_folder.rename(new_folder)
-                print(f"  renamed job folder to {new_folder}")
+                if running:
+                    print(
+                        f"  {YELLOW}skipping directory rename while job is running "
+                        f"(re-run after job completes){RESET}"
+                    )
+                else:
+                    job_folder.rename(new_folder)
+                    print(f"  renamed job folder to {new_folder}")
+                    final_folder = new_folder
+
+    # ── update log symlink inside job folder ──
+    # When both the log file and directory were renamed, update the symlink
+    # so it points to the new log filename.
+    if renamed_file and final_folder and final_folder.is_dir():
+        log_link = final_folder / "log"
+        if log_link.is_symlink():
+            log_link.unlink()
+            log_link.symlink_to(f"../{new_path.name}")
+            print(f"  updated log symlink → ../{new_path.name}")
+    elif renamed_file and job_id_m:
+        # Directory wasn't renamed (running job) — update the symlink in the
+        # existing folder so it tracks the renamed log file.
+        existing = _find_job_folder(directory, job_id_m.group(1))
+        if existing and existing.is_dir():
+            log_link = existing / "log"
+            if log_link.is_symlink():
+                log_link.unlink()
+                log_link.symlink_to(f"../{new_path.name}")
+                print(f"  updated log symlink → ../{new_path.name}")
 
     print()
     return 0
@@ -356,24 +524,27 @@ arguments:
 
 file requirements:
   - .log or .out extension
-  - Line 2 must be an integer N (sample size = N * 10)
+  - NNODES=<int> in the log header
   - Must contain "Tokens/s/device:" lines
+
+steady-state measurement:
+  Steps 0-4 are discarded (XLA compilation / profiler warmup).
+  Steps 5-14 (up to 10 data points) are used for TGS calculation.
+  Recommended: set training steps >= 15 for reliable metrics.
 
 exit status:
   0  Success
   1  File not found / not a regular file / not .log/.out / no files to process
-  2  No Tokens/s/device lines found
-  3  Line 2 is not an integer
-  4  Failed to compute statistics
+  2  No Tokens/s/device lines found (or no steady-state data)
+  3  NNODES not found in log header
 
 examples:
   %(prog)s                                    # latest log in default outputs dir
   %(prog)s 12345                              # process files for Slurm job 12345
-  %(prog)s logs                               # latest log in logs/
   %(prog)s outputs/12345-run.log              # specific file
   %(prog)s outputs/12345-JAX-llama2-70b/      # job dir (follows log symlink)
+  %(prog)s -f outputs/12345-run.log           # force rename/cleanup if job looks active
   %(prog)s -c outputs/*.log                   # cleanup mode on all log files
-  %(prog)s dir1 dir2 dir3                     # all log files from each directory
 """,
     )
     parser.add_argument(
@@ -381,6 +552,12 @@ examples:
         "--cleanup",
         action="store_true",
         help="prompt to delete files with no Tokens/s/device data (and their job folders)",
+    )
+    parser.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="force rename/cleanup even if the job appears to still be running",
     )
     parser.add_argument(
         "paths",
@@ -405,7 +582,7 @@ def main(argv: list[str] | None = None) -> int:
 
     last_rc = 0
     for f in files:
-        rc = process_file(f, cleanup=args.cleanup)
+        rc = process_file(f, cleanup=args.cleanup, force=args.force)
         if rc != 0:
             last_rc = rc
 

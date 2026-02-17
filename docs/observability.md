@@ -53,14 +53,14 @@ Prometheus metrics and Ray session logs are written to `JOB_WORKSPACE` and avail
 $JOB_WORKSPACE/
   12345-JAX-llama2-70b.log                    # Job log (stdout + stderr)
   12345-JAX-llama2-70b/
-    artifact -> ...                          # Artifact at submit time
-    log -> ../12345-JAX-llama2-70b.log       # Symlink to the job log
-    prometheus/                              # Prometheus time-series data
+    artifact -> ...                           # Artifact at submit time
+    log -> ../12345-JAX-llama2-70b.log        # Symlink to the job log
+    prometheus/                               # Prometheus time-series data
     ray_logs/
-      node001/session_*/logs/                # Head node: raylet, GCS, dashboard, worker logs
-      node002/session_*/logs/                # Worker node logs
+      node001/session_*/logs/                 # Head node: raylet, GCS, dashboard, worker logs
+      node002/session_*/logs/                 # Worker node logs
       ...
-    core.12345.*.node002.py_xla_execute.515  # Core dumps (if any)
+    core.12345.*.node002.py_xla_execute.515   # Core dumps (if any)
     <training outputs>
 ```
 

@@ -162,7 +162,8 @@ The rest of `train_env.sh` exports environment variables that control JAX, NCCL/
 
 ## Typical workflow
 
-1. **Baseline run** — train a few steps to verify the job works.
-2. **Profile** — enable `profiler: "xplane"`; merge traces and view in Perfetto. Use TraceLens for automated GEMM and communication analysis.
-3. **HLO dump** (optional) — pass `_env_ENABLE_XLA_DUMP=1` to inspect the compiled computation graph with IRLens and understand compiler decisions behind what the traces revealed.
-4. **Tune** — adjust XLA flags and environment variables in `train_env.sh` based on findings.
+1. **Baseline run** — train with `steps=15` (minimum), `profiler=xplane`, and `_env_ENABLE_XLA_DUMP=1`.
+2. **Tag TGS** — run `utils/tag_tgs.sh` to extract steady-state throughput (steps 5-14) and rename outputs.
+3. **Analyze traces** — use TraceLens for GPU utilization breakdown (compute vs communication vs idle).
+4. **Analyze HLO** — use IRLens to inspect the compiled computation graph (collective patterns, fusion structure).
+5. **Tune** — adjust XLA flags and environment variables in `train_env.sh` based on findings.
