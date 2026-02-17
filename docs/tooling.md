@@ -48,7 +48,7 @@ See [Notifications](notifications.md) for full usage, programmable patterns, and
 
 ## Monitor a Slurm job with Telegram alerts
 
-Sends [Telegram](https://telegram.org/) push notifications for [Slurm](https://slurm.schedmd.com/) job state changes, hang detection, and periodic log updates. Credentials are auto-sourced from `~/.tg_env` after [one-time setup](notifications.md#one-time-setup).
+Sends Telegram push notifications for [Slurm](https://slurm.schedmd.com/) job state changes, hang detection, and periodic log updates. Credentials are auto-sourced from `~/.tg_env` after [one-time setup](notifications.md#one-time-setup).
 
 ```bash
 utils/slurm_job_monitor.sh -j <slurm_job_id>
@@ -56,37 +56,20 @@ utils/slurm_job_monitor.sh -j <slurm_job_id>
 
 See [Notifications: slurm_job_monitor.sh](notifications.md#slurm_job_monitorsh) for monitor options, credential resolution, and tips.
 
-## Parse MaxText log files (and clean up failed jobs) — load test jobs only
+## Tag logs with TGS metrics
 
-Only used for load test job TGS (tokens/GPU/sec) calculation.
+Extracts steady-state Tokens/GPU/Second from training logs and renames the log file and job directory with the TGS value. Uses steps 5-14 for the measurement (steps 0-4 are discarded as warmup). Set training **steps >= 15** for reliable metrics. Will not rename if the job appears to still be running; use `-f` to force (log file is renamed immediately, directory rename is deferred until the job completes).
 
 ```
-# utils/tag_tgs.sh [path | JOB_ID] [-c/--cleanup]
+# utils/tag_tgs.sh [-f] [-c] [PATH ...]
 #
 # Examples:
-#   # Process latest log file in default outputs directory
-#   utils/tag_tgs.sh
-#
-#   # Process log file(s) for a Slurm job ID (looks in default outputs dir)
-#   utils/tag_tgs.sh 12345
-#
-#   # Process latest log file in specific directory
-#   utils/tag_tgs.sh logs
-#
-#   # Process specific file (and rename its job folder if it exists)
-#   utils/tag_tgs.sh outputs/12345-run.log
-#
-#   # Job directory (follows log symlink — tab-completion friendly)
-#   utils/tag_tgs.sh outputs/12345-JAX-llama2-70b/
-#
-#   # Process all log files in a directory with cleanup mode
-#   utils/tag_tgs.sh -c outputs/*.log
-#
-#   # Process latest files from multiple directories
-#   utils/tag_tgs.sh dir1 dir2 dir3
-#
-#   # Cleanup mode with short flag
-#   utils/tag_tgs.sh -c
+#   utils/tag_tgs.sh                                          # latest log in outputs/
+#   utils/tag_tgs.sh 12345                                    # Slurm job ID
+#   utils/tag_tgs.sh outputs/12345-run.log                    # specific file
+#   utils/tag_tgs.sh outputs/12345-JAX-llama2-70b/            # job dir (follows log symlink)
+#   utils/tag_tgs.sh -f outputs/12345-run.log                 # force rename/cleanup if job looks active
+#   utils/tag_tgs.sh -c outputs/*.log                         # cleanup: prompt to delete failed jobs
 ```
 
 ## Release GPUs (stop containers, kill stale processes)

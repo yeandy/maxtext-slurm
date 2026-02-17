@@ -121,6 +121,11 @@ ln -snf "../$JOB_DIR.log" "$JOB_WORKSPACE/$JOB_DIR/log"
     echo "HOSTNAME=$(hostname)"
 } | tee "$LOG_FILE"
 
+# Hold an append-mode fd to the log file. Unlike >> "$LOG_FILE" (which opens
+# by name), the fd follows the inode — so tgs_tagger -f can rename the file
+# mid-run and the JOB SUMMARY still lands in the correct (renamed) file.
+exec 3>>"$LOG_FILE"
+
 # ============================================================================
 # Job summary (EXIT trap; callers set _RUN_RC before exiting)
 # ============================================================================
@@ -152,6 +157,8 @@ _print_summary() {
   Status: $status
 ================================================================="
     echo "$summary"
-    [[ -n "${LOG_FILE:-}" ]] && echo "$summary" >> "$LOG_FILE" 2>/dev/null
+    # Write via fd 3 (not by name) so the summary goes to the correct file
+    # even if tgs_tagger -f renamed it while the job was running.
+    echo "$summary" >&3 2>/dev/null
 }
 trap _print_summary EXIT
