@@ -75,24 +75,29 @@ utils/merge_xplane_traces.py node0.trace.json.gz node1.trace.json.gz -o combined
 
 [TraceLens](https://github.com/AMD-AGI/TraceLens) automates analysis of runtime trace files — GPU kernel utilization, GEMM performance, and communication patterns — from the xplane protobuf or JSON traces produced by the profiler.
 
-```python
-from TraceLens.TraceLens import JaxAnalyses
-
-# GPU kernel utilization breakdown
-averages, categorized, additional = JaxAnalyses.summarize_gpu_events("profile.xplane.pb")
-
-# GEMM performance from runtime trace
-gemms = JaxAnalyses.summarize_gpu_gemm_events_from_pb("profile.xplane.pb")
-
-# Communication analysis (requires both trace and HLO buffer assignment)
-comms = JaxAnalyses.summarize_gpu_communication_events("profile.xplane.pb", "buffer-assignment.txt")
+```bash
+pip install git+https://github.com/AMD-AGI/TraceLens.git
 ```
 
-Or generate a full performance report via CLI:
+> **Note:** In environments with TensorFlow 2.19+ / `xprof`, TraceLens requires source patches before it will run. See `skills/performance-analysis/tracelens-patches.md` for details.
+
+Generate a full performance report from an xplane trace:
 
 ```bash
-python generate_perf_report_jax.py --profile_path path/to/profile.xplane.pb --output_csvs_dir save/to/dir
+TraceLens_generate_perf_report_jax \
+    --profile_path <job_dir>/**/plugins/profile/**/*.xplane.pb \
+    --output_xlsx_path <job_dir>/tracelens/report.xlsx \
+    --output_csvs_dir <job_dir>/tracelens/csvs
 ```
+
+Key output columns in `csvs/gpu_events_averages.csv`:
+
+| Column | Meaning |
+|--------|---------|
+| `computation_time` | Time on compute kernels (GEMMs, fusions, attention) |
+| `exposed_comm_time` | Communication NOT overlapped with compute (lower is better) |
+| `idle_time` | GPU idle (should be near 0) |
+| `total_comm_time` | All communication including the portion overlapped with compute |
 
 See the [JAX analysis guide](https://github.com/AMD-AGI/TraceLens/blob/main/docs/jax_analyses.md) for the full TraceLens API.
 
@@ -163,7 +168,25 @@ The rest of `train_env.sh` exports environment variables that control JAX, NCCL/
 ## Typical workflow
 
 1. **Baseline run** — train with `steps=15` (minimum), `profiler=xplane`, and `_env_ENABLE_XLA_DUMP=1`.
-2. **Tag TGS** — run `utils/tag_tgs.sh` to extract steady-state throughput (steps 5-14) and rename outputs.
-3. **Analyze traces** — use TraceLens for GPU utilization breakdown (compute vs communication vs idle).
-4. **Analyze HLO** — use IRLens to inspect the compiled computation graph (collective patterns, fusion structure).
-5. **Tune** — adjust XLA flags and environment variables in `train_env.sh` based on findings.
+2. **Analyze** — run `utils/analyze_job.py` on the job output to automatically detect artifacts and dispatch the appropriate tools:
+
+```bash
+utils/analyze_job.py outputs/<job>.log          # finished job
+utils/analyze_job.py -f outputs/<job>.log       # running job (re-run as needed)
+```
+
+This runs whichever of the following are applicable:
+  - **Tag TGS** — `tgs_tagger.py` extracts steady-state throughput (steps 5-14) and renames outputs.
+  - **Analyze traces** — TraceLens for GPU utilization breakdown (compute vs communication vs idle).
+  - **Analyze HLO** — IRLens to inspect the compiled computation graph (collective patterns, fusion structure).
+
+3. **Browse results** — start the dashboard to visualize, compare, and download analysis results:
+
+```bash
+utils/perf_server.py                             # http://localhost:8080
+utils/perf_server.py --host 0.0.0.0 --port 8080  # remote access
+```
+
+Requires `pip install fastapi uvicorn`. The dashboard reads `analysis.json` files written by `analyze_job.py`.
+
+4. **Tune** — adjust XLA flags and environment variables in `train_env.sh` based on findings.

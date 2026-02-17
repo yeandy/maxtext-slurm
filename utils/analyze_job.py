@@ -1,0 +1,788 @@
+#!/usr/bin/env python3
+"""Analyze MaxText training jobs — detect artifacts and run analysis tools.
+
+Thin orchestrator that checks a job's output directory for available
+artifacts (log with TGS data, XLA dump, xplane trace) and dispatches
+to the corresponding tools (tgs_tagger, IRLens, TraceLens).
+
+After running tools, saves a structured ``analysis.json`` in the job
+directory for consumption by ``perf_server.py`` (web dashboard).
+
+Safe to re-run on the same job (idempotent). For running jobs, pass -f
+to allow tgs_tagger to rename the log file while deferring the directory
+rename until the job completes.
+
+Usage:
+    analyze_job.py [OPTIONS] [PATH ...]
+
+See --help for full details.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import glob
+import json
+import math
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+# ── ANSI colors ──────────────────────────────────────────────────────────────
+
+RED = "\033[31m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+CYAN = "\033[36m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+RESET = "\033[0m"
+
+# ── Patterns ─────────────────────────────────────────────────────────────────
+
+RE_TOKENS_VALUE = re.compile(r"Tokens/s/device:\s*([0-9]+(?:\.[0-9]+)?)")
+RE_TOKENS = re.compile(r"Tokens/s/device:\s*[0-9]+(?:\.[0-9]+)?")
+RE_STEP_LINE = re.compile(
+    r"completed step:\s*(\d+),\s*seconds:\s*([0-9.]+),\s*"
+    r"TFLOP/s/device:\s*([0-9.]+),\s*MFU:\s*([0-9.]+)%,\s*"
+    r"Tokens/s/device:\s*([0-9.]+).*?loss:\s*([0-9.]+)"
+)
+RE_NNODES = re.compile(r"^(?:NNODES|SLURM_JOB_NUM_NODES)\s*=\s*(\d+)", re.MULTILINE)
+RE_JOB_NAME = re.compile(r"^SLURM_JOB_NAME\s*=\s*(.+)", re.MULTILINE)
+RE_MODEL_NAME = re.compile(r"^MODEL_NAME\s*=\s*(.+)", re.MULTILINE)
+RE_JOB_ID_HEADER = re.compile(r"^(?:SLURM_JOB_ID|JOB_ID)\s*=\s*(.+)", re.MULTILINE)
+RE_EXP_TAG = re.compile(r"^EXP_TAG\s*=\s*(.+)", re.MULTILINE)
+RE_PASSTHROUGH = re.compile(r'^PASSTHROUGH_ARGS\s*=\s*"?(.*?)"?\s*$', re.MULTILINE)
+_LOG_SUFFIXES = {".log", ".out"}
+
+# Constants matching tgs_tagger.py
+WARMUP_STEPS = 5
+STEADY_STATE_STEPS = 10
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def _banner(label: str) -> None:
+    print(f"\n{CYAN}{BOLD}{'─' * 3} {label} {'─' * (60 - len(label))} {RESET}")
+
+
+def _step(label: str) -> None:
+    print(f"  {GREEN}▸{RESET} {label}")
+
+
+def _skip(label: str, reason: str) -> None:
+    print(f"  {DIM}▹ {label}: {reason}{RESET}")
+
+
+def _warn(msg: str) -> None:
+    print(f"  {YELLOW}⚠ {msg}{RESET}")
+
+
+def _err(msg: str) -> None:
+    print(f"  {RED}✗ {msg}{RESET}")
+
+
+def _run(cmd: list[str], label: str, capture: bool = False) -> subprocess.CompletedProcess:
+    """Run a subprocess, print its output, and return the result."""
+    _step(f"Running {label}")
+    print(f"    {DIM}$ {' '.join(cmd)}{RESET}", flush=True)
+    result = subprocess.run(
+        cmd,
+        capture_output=capture,
+        text=True,
+    )
+    if result.returncode != 0 and capture:
+        if result.stdout:
+            print(result.stdout)
+        if result.stderr:
+            sys.stderr.write(result.stderr)
+    return result
+
+
+# ── Artifact detection ───────────────────────────────────────────────────────
+
+
+def _find_log_file(job_dir: Path) -> Path | None:
+    """Find the log file for a job directory (check symlink, then parent)."""
+    # Job dir might have a log symlink
+    log_link = job_dir / "log"
+    if log_link.is_file():
+        return log_link.resolve()
+
+    # Look in the parent directory for <job_prefix>*.log
+    parent = job_dir.parent
+    prefix = job_dir.name
+    for suffix in _LOG_SUFFIXES:
+        candidates = sorted(parent.glob(f"{prefix}*{suffix}"))
+        if candidates:
+            return candidates[0]
+
+    # Try matching by job ID prefix
+    m = re.match(r"^([^-]+)-", job_dir.name)
+    if m:
+        job_id = m.group(1)
+        for suffix in _LOG_SUFFIXES:
+            candidates = sorted(parent.glob(f"{job_id}-*{suffix}"))
+            if candidates:
+                return candidates[0]
+
+    return None
+
+
+def _find_hlo_file(job_dir: Path) -> Path | None:
+    """Find the latest jit_train_step *gpu_after_optimizations.txt in xla_dump/."""
+    xla_dump = job_dir / "xla_dump"
+    if not xla_dump.is_dir():
+        return None
+    candidates = sorted(xla_dump.glob("*jit_train_step*gpu_after_optimizations.txt"))
+    if not candidates:
+        return None
+    # Use the highest module number (latest)
+    return candidates[-1]
+
+
+def _find_xplane_files(job_dir: Path) -> list[Path]:
+    """Find all *.xplane.pb files under the job directory."""
+    return sorted(job_dir.rglob("*.xplane.pb"))
+
+
+def _log_has_tgs_data(log_file: Path) -> bool:
+    """Check if the log file contains any Tokens/s/device lines."""
+    try:
+        text = log_file.read_text(errors="replace")
+        return bool(RE_TOKENS.search(text))
+    except OSError:
+        return False
+
+
+def _find_buffer_assignment(job_dir: Path) -> Path | None:
+    """Find the buffer assignment file for TraceLens communication analysis."""
+    xla_dump = job_dir / "xla_dump"
+    if not xla_dump.is_dir():
+        return None
+    candidates = sorted(xla_dump.glob("*jit_train_step*gpu_after_optimizations-buffer-assignment.txt"))
+    return candidates[-1] if candidates else None
+
+
+# ── Log parsing for analysis.json ────────────────────────────────────────────
+
+
+def _compute_stats(values: list[float]) -> dict | None:
+    """Compute mean/std/n for a list of values. Returns None if empty."""
+    n = len(values)
+    if n == 0:
+        return None
+    mean = sum(values) / n
+    var = max(sum(v * v for v in values) / n - mean * mean, 0.0)
+    return {"mean": round(mean, 3), "std": round(math.sqrt(var), 3), "n": n}
+
+
+def _parse_log_metadata(text: str, log_file: Path) -> dict:
+    """Extract job metadata from the log header."""
+    meta: dict = {}
+
+    m = RE_JOB_ID_HEADER.search(text[:2000])
+    if m:
+        meta["job_id"] = m.group(1).strip()
+
+    m = RE_JOB_NAME.search(text[:2000])
+    if m:
+        meta["job_name"] = m.group(1).strip()
+
+    m = RE_MODEL_NAME.search(text[:2000])
+    if m:
+        meta["model"] = m.group(1).strip()
+
+    m = RE_NNODES.search(text[:2000])
+    if m:
+        meta["num_nodes"] = int(m.group(1))
+
+    m = RE_EXP_TAG.search(text[:2000])
+    if m:
+        meta["exp_tag"] = m.group(1).strip()
+
+    # Infer timestamp from log filename (local_YYYYMMDD_HHMMSS_... or slurm job)
+    fname = log_file.stem
+    ts_m = re.search(r"(\d{8})_(\d{6})", fname)
+    if ts_m:
+        try:
+            dt = datetime.strptime(
+                f"{ts_m.group(1)}_{ts_m.group(2)}", "%Y%m%d_%H%M%S"
+            )
+            meta["timestamp"] = dt.isoformat()
+        except ValueError:
+            pass
+
+    if "timestamp" not in meta:
+        try:
+            mtime = log_file.stat().st_mtime
+            meta["timestamp"] = datetime.fromtimestamp(
+                mtime, tz=timezone.utc
+            ).isoformat()
+        except OSError:
+            pass
+
+    return meta
+
+
+def _parse_step_data(text: str) -> list[dict]:
+    """Parse per-step metrics from log text.
+
+    Returns a list of dicts with keys: step, seconds, tflops, mfu, tgs, loss.
+    """
+    steps = []
+    for m in RE_STEP_LINE.finditer(text):
+        steps.append({
+            "step": int(m.group(1)),
+            "seconds": float(m.group(2)),
+            "tflops": float(m.group(3)),
+            "mfu": float(m.group(4)),
+            "tgs": float(m.group(5)),
+            "loss": float(m.group(6)),
+        })
+    return steps
+
+
+def _compute_tgs_summary(steps: list[dict], num_nodes: int = 1) -> dict:
+    """Compute TGS summary matching tgs_tagger.py windows.
+
+    Multi-node jobs log one entry per node per step, so each logical step
+    has ``num_nodes`` consecutive entries.  Window sizes are scaled by
+    ``num_nodes``.  Ranges use actual step numbers from the log data
+    (correct for checkpoint-restored jobs that don't start at step 0).
+    """
+    all_tgs = [s["tgs"] for s in steps]
+    all_step_nums = [s["step"] for s in steps]
+    unique_steps = sorted(set(all_step_nums))
+
+    warmup_n = WARMUP_STEPS * num_nodes
+    steady_n = STEADY_STATE_STEPS * num_nodes
+    warmup = all_tgs[:warmup_n]
+    steady = all_tgs[warmup_n: warmup_n + steady_n]
+    tail_start = warmup_n + steady_n
+    tail = all_tgs[tail_start:] if len(all_tgs) > tail_start else []
+
+    def _step_range(start_idx: int, end_idx: int) -> str:
+        if start_idx >= len(unique_steps):
+            return "?"
+        first = unique_steps[start_idx]
+        last = unique_steps[min(end_idx, len(unique_steps) - 1)]
+        return f"{first}-{last}" if first != last else str(first)
+
+    result: dict = {"all": _compute_stats(all_tgs)}
+
+    w = _compute_stats(warmup)
+    if w:
+        w["range"] = _step_range(0, WARMUP_STEPS - 1)
+    result["warmup"] = w
+
+    s = _compute_stats(steady)
+    if s:
+        s_logical = len(steady) // num_nodes if num_nodes else len(steady)
+        s["range"] = _step_range(WARMUP_STEPS, WARMUP_STEPS + s_logical - 1)
+    result["steady"] = s
+
+    t = _compute_stats(tail)
+    if t:
+        t_pos = WARMUP_STEPS + STEADY_STATE_STEPS
+        t_logical = len(tail) // num_nodes if num_nodes else len(tail)
+        t["range"] = _step_range(t_pos, t_pos + t_logical - 1)
+    result["tail"] = t
+
+    if result["all"]:
+        result["all"]["range"] = _step_range(0, len(unique_steps) - 1)
+
+    result["num_nodes"] = num_nodes
+
+    return result
+
+
+def _parse_tracelens_summary(job_dir: Path) -> dict | None:
+    """Parse TraceLens gpu_events_averages.csv for summary percentages.
+
+    The CSV has rows like:
+        type,time ms,percent
+        computation_time,22376.48,74.57
+        exposed_comm_time,7605.25,25.34
+    Each metric is a row keyed by the ``type`` column.
+    """
+    csv_path = job_dir / "tracelens" / "csvs" / "gpu_events_averages.csv"
+    if not csv_path.is_file():
+        return None
+
+    try:
+        summary: dict = {}
+        with open(csv_path, newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                metric_type = row.get("type", "").strip()
+                if metric_type in (
+                    "computation_time", "exposed_comm_time",
+                    "idle_time", "total_comm_time", "busy_time",
+                ):
+                    try:
+                        summary[metric_type] = round(float(row["percent"]), 2)
+                    except (ValueError, TypeError, KeyError):
+                        pass
+        return summary if summary else None
+    except (OSError, csv.Error):
+        pass
+    return None
+
+
+def _build_analysis_json(
+    job_dir: Path | None,
+    log_file: Path | None,
+    log_text: str | None,
+    steps: list[dict] | None,
+) -> dict:
+    """Build the analysis.json content from parsed data."""
+    result: dict = {"analyzed_at": datetime.now(tz=timezone.utc).isoformat()}
+
+    # Metadata from log
+    if log_text and log_file:
+        result.update(_parse_log_metadata(log_text, log_file))
+
+    # Per-step data and TGS summary
+    if steps:
+        nn = result.get("num_nodes", 1)
+        result["tgs"] = _compute_tgs_summary(steps, num_nodes=nn)
+        result["tgs_per_step"] = [s["tgs"] for s in steps]
+        result["mfu_per_step"] = [s["mfu"] for s in steps]
+        result["loss_per_step"] = [s["loss"] for s in steps]
+        result["seconds_per_step"] = [s["seconds"] for s in steps]
+        unique_steps = sorted(set(s["step"] for s in steps))
+        result["step_begin"] = unique_steps[0]
+        result["step_end"] = unique_steps[-1]
+
+    # Artifact paths (relative to job_dir)
+    if job_dir:
+        artifacts: dict = {}
+        if log_file:
+            try:
+                artifacts["log_file"] = str(log_file.relative_to(job_dir.parent))
+            except ValueError:
+                artifacts["log_file"] = str(log_file)
+
+        hlo = _find_hlo_file(job_dir)
+        if hlo:
+            artifacts["hlo_file"] = str(hlo.relative_to(job_dir))
+
+        xplane = _find_xplane_files(job_dir)
+        if xplane:
+            artifacts["xplane_files"] = [
+                str(f.relative_to(job_dir)) for f in xplane
+            ]
+
+        buf = _find_buffer_assignment(job_dir)
+        if buf:
+            artifacts["buffer_assignment"] = str(buf.relative_to(job_dir))
+
+        tl_dir = job_dir / "tracelens"
+        if tl_dir.is_dir():
+            artifacts["tracelens_dir"] = "tracelens/"
+
+        result["artifacts"] = artifacts
+
+        # TraceLens summary
+        tl_summary = _parse_tracelens_summary(job_dir)
+        if tl_summary:
+            result["tracelens_summary"] = tl_summary
+
+    return result
+
+
+def _save_analysis_json(job_dir: Path, data: dict) -> None:
+    """Write analysis.json to the job directory."""
+    out = job_dir / "analysis.json"
+    try:
+        with open(out, "w") as f:
+            json.dump(data, f, indent=2)
+        _step(f"Saved {out}")
+    except OSError as e:
+        _warn(f"Failed to write analysis.json: {e}")
+
+
+# ── Resolve job directory from input path ────────────────────────────────────
+
+
+def _resolve_job_dir(path: Path) -> Path | None:
+    """Resolve a path (log file, directory, etc.) to its job directory."""
+    if path.is_dir():
+        return path
+
+    if path.is_file() and path.suffix in _LOG_SUFFIXES:
+        # Log file sits alongside the job dir in outputs/
+        # Strip .log and any TGS suffix to find the base name
+        stem = path.stem
+        # Remove TGS tag if present
+        m = re.match(r"(.*?)(?:-[^-]*-\d+N-[^-]*-TGS_[\d.]+)?$", stem)
+        base = m.group(1) if m else stem
+        parent = path.parent
+
+        # Try exact stem match first
+        candidate = parent / stem
+        if candidate.is_dir():
+            return candidate
+
+        # Try base name match
+        candidate = parent / base
+        if candidate.is_dir():
+            return candidate
+
+        # Try job ID match
+        id_m = re.match(r"^([^-]+)-", stem)
+        if id_m:
+            job_id = id_m.group(1)
+            for entry in sorted(parent.iterdir()):
+                if entry.is_dir() and entry.name.startswith(f"{job_id}-"):
+                    return entry
+
+    return None
+
+
+# ── Tool runners ─────────────────────────────────────────────────────────────
+
+
+def _run_tgs_tagger(log_file: Path, force: bool) -> int:
+    """Run tgs_tagger.py on the log file."""
+    cmd = [sys.executable, str(SCRIPT_DIR / "tgs_tagger.py")]
+    if force:
+        cmd.append("-f")
+    cmd.append(str(log_file))
+    result = _run(cmd, "tgs_tagger")
+    return result.returncode
+
+
+def _run_irlens(hlo_file: Path, extra_args: list[str] | None = None) -> int:
+    """Run IRLens_analyze_hlo_ir.py on the HLO file."""
+    cmd = [sys.executable, str(SCRIPT_DIR / "IRLens_analyze_hlo_ir.py"), str(hlo_file)]
+    if extra_args:
+        cmd.extend(extra_args)
+    result = _run(cmd, "IRLens")
+    return result.returncode
+
+
+def _run_tracelens(
+    xplane_file: Path,
+    output_dir: Path,
+    buffer_assignment: Path | None = None,
+) -> int:
+    """Run TraceLens_generate_perf_report_jax on the xplane file."""
+    # Check if TraceLens is installed
+    if not shutil.which("TraceLens_generate_perf_report_jax"):
+        _warn(
+            "TraceLens not installed. Install with:\n"
+            "      pip install git+https://github.com/AMD-AGI/TraceLens.git"
+        )
+        return 1
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    model_name = xplane_file.stem.replace(".xplane", "")
+    xlsx_path = output_dir / f"{model_name}_tracelens_report.xlsx"
+    csvs_dir = output_dir / "csvs"
+
+    cmd = [
+        "TraceLens_generate_perf_report_jax",
+        "--profile_path", str(xplane_file),
+        "--output_xlsx_path", str(xlsx_path),
+        "--output_csvs_dir", str(csvs_dir),
+    ]
+    result = _run(cmd, "TraceLens")
+    if result.returncode != 0:
+        _warn(
+            "TraceLens failed. If this is a TF 2.19+/xprof environment,\n"
+            "      see skills/performance-analysis/tracelens-patches.md"
+        )
+    else:
+        _step(f"TraceLens output: {output_dir}")
+    return result.returncode
+
+
+# ── Process one job ──────────────────────────────────────────────────────────
+
+
+def process_job(
+    path: Path,
+    *,
+    force: bool = False,
+    skip_tgs: bool = False,
+    skip_irlens: bool = False,
+    skip_tracelens: bool = False,
+    irlens_args: list[str] | None = None,
+) -> int:
+    """Analyze a single job. Returns 0 on success, nonzero on any failure."""
+    _banner(f"Analyzing: {path}")
+
+    # Resolve job directory
+    job_dir = _resolve_job_dir(path)
+    log_file: Path | None = None
+
+    if path.is_file() and path.suffix in _LOG_SUFFIXES:
+        log_file = path
+    elif job_dir:
+        log_file = _find_log_file(job_dir)
+
+    if job_dir:
+        print(f"  Job directory: {job_dir}")
+    if log_file:
+        print(f"  Log file:      {log_file}")
+
+    if not job_dir and not log_file:
+        _err(f"Cannot resolve job directory or log file from: {path}")
+        return 1
+
+    # ── Parse log for structured data ──
+    log_text: str | None = None
+    steps: list[dict] | None = None
+    if log_file:
+        try:
+            log_text = log_file.read_text(errors="replace")
+            steps = _parse_step_data(log_text)
+        except OSError:
+            pass
+
+    rc = 0
+
+    # ── TGS tagger ──
+    if skip_tgs:
+        _skip("tgs_tagger", "skipped (--skip-tgs)")
+    elif log_file and _log_has_tgs_data(log_file):
+        if _run_tgs_tagger(log_file, force) != 0:
+            rc = 1
+        # tgs_tagger may have renamed log file and/or job dir — re-resolve
+        if job_dir and not job_dir.exists():
+            job_id_m = re.match(r"^([^-]+)-", job_dir.name)
+            if job_id_m:
+                parent = job_dir.parent
+                for entry in sorted(parent.iterdir()):
+                    if entry.is_dir() and entry.name.startswith(f"{job_id_m.group(1)}-"):
+                        job_dir = entry
+                        break
+        if log_file and not log_file.exists() and job_dir:
+            log_file = _find_log_file(job_dir)
+            if log_file:
+                try:
+                    log_text = log_file.read_text(errors="replace")
+                    steps = _parse_step_data(log_text)
+                except OSError:
+                    pass
+    elif log_file:
+        _skip("tgs_tagger", "no Tokens/s/device data in log yet")
+    else:
+        _skip("tgs_tagger", "no log file found")
+
+    # ── IRLens ──
+    if skip_irlens:
+        _skip("IRLens", "skipped (--skip-irlens)")
+    elif job_dir:
+        hlo_file = _find_hlo_file(job_dir)
+        if hlo_file:
+            if _run_irlens(hlo_file, irlens_args) != 0:
+                rc = 1
+        else:
+            _skip("IRLens", "no xla_dump/*jit_train_step*gpu_after_optimizations.txt found")
+    else:
+        _skip("IRLens", "no job directory found")
+
+    # ── TraceLens ──
+    if skip_tracelens:
+        _skip("TraceLens", "skipped (--skip-tracelens)")
+    elif job_dir:
+        xplane_files = _find_xplane_files(job_dir)
+        if xplane_files:
+            tracelens_dir = job_dir / "tracelens"
+            buffer_assignment = _find_buffer_assignment(job_dir)
+            # Analyze rank 0 (sufficient for SPMD; all nodes run same program)
+            if _run_tracelens(xplane_files[0], tracelens_dir, buffer_assignment) != 0:
+                rc = 1
+            if len(xplane_files) > 1:
+                _step(f"Note: {len(xplane_files)} xplane files found (analyzed rank 0)")
+        else:
+            _skip("TraceLens", "no *.xplane.pb files found")
+    else:
+        _skip("TraceLens", "no job directory found")
+
+    # ── Save analysis.json ──
+    if job_dir and job_dir.is_dir():
+        analysis = _build_analysis_json(job_dir, log_file, log_text, steps)
+        _save_analysis_json(job_dir, analysis)
+
+    # ── Summary ──
+    print()
+    artifact_names = []
+    if log_file and _log_has_tgs_data(log_file):
+        artifact_names.append("TGS data")
+    if job_dir and _find_hlo_file(job_dir):
+        artifact_names.append("HLO dump")
+    if job_dir and _find_xplane_files(job_dir):
+        artifact_names.append("xplane trace")
+    if artifact_names:
+        print(f"  {GREEN}Available artifacts:{RESET} {', '.join(artifact_names)}")
+    else:
+        print(f"  {YELLOW}No analysis artifacts found yet.{RESET}")
+
+    return rc
+
+
+# ── Path resolution ──────────────────────────────────────────────────────────
+
+
+def resolve_paths(args: list[str], default_dir: str) -> list[Path]:
+    """Resolve CLI arguments to a list of job paths (files or directories)."""
+    if not args:
+        args = [default_dir]
+
+    paths: list[Path] = []
+    for arg in args:
+        p = Path(arg)
+
+        if p.is_file() or p.is_dir():
+            paths.append(p)
+            continue
+
+        # Try glob expansion
+        expanded = sorted(glob.glob(arg))
+        if expanded:
+            paths.extend(Path(f) for f in expanded if Path(f).is_file() or Path(f).is_dir())
+        else:
+            if any(c in arg for c in "*?["):
+                _err(f"Pattern matched nothing: {arg}")
+            else:
+                _err(f"Path does not exist: {arg}")
+
+    return paths
+
+
+# ── CLI ──────────────────────────────────────────────────────────────────────
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="analyze_job",
+        description=(
+            "Detect available artifacts in a MaxText job's output directory "
+            "and run the appropriate analysis tools (tgs_tagger, IRLens, TraceLens)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+arguments:
+  PATH can be one or more of:
+    - Log file:  specific .log/.out file
+    - Job dir:   job output directory (with or without log symlink)
+    - Glob:      pattern expanding to log files or directories
+
+  Default: outputs directory (from JOB_WORKSPACE or relative to script)
+
+artifact detection:
+  - TGS data:     log file contains "Tokens/s/device:" lines
+  - HLO dump:     <job_dir>/xla_dump/*jit_train_step*gpu_after_optimizations.txt exists
+  - xplane trace: <job_dir>/**/*.xplane.pb exists
+
+examples:
+  %(prog)s outputs/12345-JAX-llama2-70b.log
+  %(prog)s outputs/12345-JAX-llama2-70b/
+  %(prog)s outputs/local_2026*
+  %(prog)s -f outputs/12345-JAX-llama2-70b.log    # force on running job
+  %(prog)s --skip-tracelens outputs/*.log          # skip TraceLens
+""",
+    )
+    parser.add_argument(
+        "-f", "--force",
+        action="store_true",
+        help="forward -f to tgs_tagger (force rename on running jobs)",
+    )
+    parser.add_argument(
+        "--skip-tgs",
+        action="store_true",
+        help="skip tgs_tagger step",
+    )
+    parser.add_argument(
+        "--skip-irlens",
+        action="store_true",
+        help="skip IRLens step",
+    )
+    parser.add_argument(
+        "--skip-tracelens",
+        action="store_true",
+        help="skip TraceLens step",
+    )
+    parser.add_argument(
+        "--irlens-args",
+        nargs=argparse.REMAINDER,
+        default=None,
+        help="pass-through arguments to IRLens (e.g. --irlens-args --op communication)",
+    )
+    parser.add_argument(
+        "paths",
+        nargs="*",
+        metavar="PATH",
+        help="log files, job directories, or glob patterns to analyze",
+    )
+    return parser
+
+
+_DASHBOARD_PORT = 8080
+
+
+def _dashboard_hint() -> None:
+    """Print a one-line hint about the web dashboard."""
+    server_script = SCRIPT_DIR / "perf_server.py"
+    if not server_script.exists():
+        return
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.3)
+        s.connect(("127.0.0.1", _DASHBOARD_PORT))
+        s.close()
+        print(
+            f"\n{CYAN}Dashboard:{RESET} "
+            f"http://0.0.0.0:{_DASHBOARD_PORT}  (running)"
+        )
+    except OSError:
+        print(
+            f"\n{CYAN}Start dashboard:{RESET}  "
+            f"utils/perf_server.py --host 0.0.0.0 --port {_DASHBOARD_PORT}"
+        )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    default_dir = os.environ.get(
+        "JOB_WORKSPACE", str(SCRIPT_DIR.parent / "outputs")
+    )
+
+    paths = resolve_paths(args.paths, default_dir)
+    if not paths:
+        print(f"{RED}No valid paths to analyze.{RESET}")
+        return 1
+
+    last_rc = 0
+    for p in paths:
+        rc = process_job(
+            p,
+            force=args.force,
+            skip_tgs=args.skip_tgs,
+            skip_irlens=args.skip_irlens,
+            skip_tracelens=args.skip_tracelens,
+            irlens_args=args.irlens_args,
+        )
+        if rc != 0:
+            last_rc = rc
+
+    _dashboard_hint()
+    return last_rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

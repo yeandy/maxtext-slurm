@@ -2,6 +2,8 @@
 
 Toolkit for launching and observing [MaxText](https://github.com/AI-Hypercomputer/maxtext) — a [JAX](https://jax.dev/)-based LLM training framework — on [Slurm](https://slurm.schedmd.com/)-managed AMD GPU clusters. One command runs distributed training with model selection, container setup, and multi-node coordination handled automatically. A carefully designed [observability](docs/observability.md) stack (via `RAY=1`) records GPU state, host health, network diagnostics, and training metrics into a single [time-series database](https://en.wikipedia.org/wiki/Time_series_database) (TSDB) — essential for monitoring long-running production training, diagnosing incidents, and day-to-day tuning and validation.
 
+An extensible [AI skill framework](skills/) equips AI assistants with out-of-the-box domain expertise across the full training lifecycle — from profiling and performance analysis to production incident diagnosis — with more skills added over time.
+
 This is a **reference implementation** of a [layered](docs/architecture.md) launch architecture where each tier — orchestration, container, training, and even GPU vendor — can be [adapted independently](docs/extensibility.md) without cascading changes. See [Architecture](docs/architecture.md) for the full training flow and [Extensibility](docs/extensibility.md) for what each swap involves.
 
 ## Quickstart
@@ -59,6 +61,10 @@ utils/slurm_job_monitor.sh -j <slurm_job_id>
 
 See [Observability](docs/observability.md) for the full story.
 
+## AI-assisted workflows
+
+The `skills/` directory contains structured instructions for AI coding assistants ([Cursor](https://cursor.com/), [Claude Code](https://docs.anthropic.com/en/docs/claude-code)). See [`skills/README.md`](skills/README.md) for the full list.
+
 ## Learn more
 
 **Launch**
@@ -76,7 +82,7 @@ See [Observability](docs/observability.md) for the full story.
 | [Notifications](docs/notifications.md) | Telegram setup, programmable messaging (`telegram_bot.sh`), automated job monitoring |
 | [Performance](docs/performance.md) | Profiling (xplane traces, HLO dumps), analysis (TraceLens, IRLens), tuning |
 | [Debugging](docs/debugging.md) | Core dumps, crash reproduction, unresponsive nodes |
-| [Tooling](docs/tooling.md) | Log tailing, job monitoring, Prometheus inspection, artifact cleanup |
+| [Tooling](docs/tooling.md) | Performance analysis, log tailing, job monitoring, Prometheus inspection, artifact cleanup |
 
 **Adapt**
 
@@ -87,8 +93,9 @@ See [Observability](docs/observability.md) for the full story.
 
 ## Acknowledgements
 
-- Documentation compiled with the assistance of [Cursor](https://cursor.com/) and [Claude-4.6-opus-high](https://anthropic.com/claude).
+- Documentation compiled with the assistance of Cursor and [Claude-4.6-opus-high](https://anthropic.com/claude).
 - Observability stack implemented in collaboration with Cursor and Claude-4.6-opus-high.
+- AI skill framework and skills built with Cursor and Claude-4.6-opus-high.
 - Some utility scripts developed using [ChatGPT 5/5.1](https://openai.com/chatgpt).
 
 ## License
