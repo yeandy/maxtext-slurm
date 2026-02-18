@@ -155,9 +155,10 @@ def _job_summary(j: dict, dir_name: str = "", include_per_step: bool = False) ->
     else:
         summary["timestamp"] = j.get("timestamp", "")
         summary["analyzed_at"] = j.get("analyzed_at", "")
-        summary["has_hlo"] = bool(j.get("artifacts", {}).get("hlo_file"))
-        summary["has_xplane"] = bool(j.get("artifacts", {}).get("xplane_files"))
-        summary["has_tracelens"] = bool(j.get("artifacts", {}).get("tracelens_dir"))
+        arts = j.get("artifacts", {})
+        summary["has_hlo"] = bool(arts.get("hlo_file"))
+        summary["has_xplane"] = bool(arts.get("xplane_files") or arts.get("profile_dir"))
+        summary["has_tracelens"] = bool(arts.get("tracelens_dir"))
     return summary
 
 
@@ -418,21 +419,76 @@ async def get_tgs_steps(job_id: str):
     }
 
 
+def _get_external_profile_dir(job_dir: Path) -> Path | None:
+    """Read analysis.json and return the external profile_dir, if any."""
+    aj = job_dir / "analysis.json"
+    if not aj.is_file():
+        return None
+    try:
+        data = json.loads(aj.read_text())
+        pd = data.get("artifacts", {}).get("profile_dir")
+        if pd:
+            p = Path(pd)
+            if p.is_dir():
+                return p
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None
+
+
+_PROFILES_PREFIX = "_profiles/"
+
+
 @app.get("/api/jobs/{job_id}/files")
 async def list_job_files(job_id: str):
-    """List all files in the job directory."""
+    """List all files in the job directory.
+
+    When profiles live outside the job directory (checkpointing jobs),
+    they are included under the virtual ``_profiles/`` prefix so the
+    dashboard can render Perfetto links and download buttons for them.
+    """
     job_dir = _find_job_dir(job_id)
-    return {"files": _list_files_recursive(job_dir)}
+    files = _list_files_recursive(job_dir)
+    ext_dir = _get_external_profile_dir(job_dir)
+    if ext_dir:
+        for f in sorted(ext_dir.rglob("*")):
+            if f.is_file():
+                rel = str(f.relative_to(ext_dir))
+                try:
+                    size = f.stat().st_size
+                except OSError:
+                    size = 0
+                files.append({
+                    "path": f"{_PROFILES_PREFIX}{rel}",
+                    "size": size,
+                    "name": f.name,
+                })
+    return {"files": files}
 
 
 @app.get("/api/jobs/{job_id}/files/{file_path:path}")
 async def serve_job_file(job_id: str, file_path: str):
-    """Serve a specific file from the job directory."""
+    """Serve a specific file from the job directory.
+
+    Files under the virtual ``_profiles/`` prefix are resolved against
+    the external ``profile_dir`` recorded in ``analysis.json`` (used
+    when checkpointing redirects profiler output to a shared directory).
+    """
     job_dir = _find_job_dir(job_id)
-    target = (job_dir / file_path).resolve()
-    # Security: ensure the resolved path is under job_dir
-    if not str(target).startswith(str(job_dir.resolve())):
-        raise HTTPException(403, "Path traversal not allowed")
+
+    if file_path.startswith(_PROFILES_PREFIX):
+        ext_dir = _get_external_profile_dir(job_dir)
+        if not ext_dir:
+            raise HTTPException(404, "No external profile directory configured")
+        rel = file_path[len(_PROFILES_PREFIX):]
+        target = (ext_dir / rel).resolve()
+        if not str(target).startswith(str(ext_dir.resolve())):
+            raise HTTPException(403, "Path traversal not allowed")
+    else:
+        target = (job_dir / file_path).resolve()
+        if not str(target).startswith(str(job_dir.resolve())):
+            raise HTTPException(403, "Path traversal not allowed")
+
     if not target.is_file():
         raise HTTPException(404, f"File not found: {file_path}")
     return FileResponse(target, filename=target.name)

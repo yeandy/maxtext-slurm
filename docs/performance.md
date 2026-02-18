@@ -174,15 +174,15 @@ The rest of `train_env.sh` exports environment variables that control JAX, NCCL/
 
 ```bash
 utils/analyze_job.py outputs/<job>.log          # finished job
-utils/analyze_job.py -f outputs/<job>.log       # force re-analysis (or running job)
+utils/analyze_job.py -f outputs/<job>.log       # force re-analysis
 ```
 
 This runs whichever of the following are applicable:
-  - **Tag TGS** — `tgs_tagger.py` extracts steady-state throughput (steps 5-14) and renames outputs.
-  - **Analyze traces** — TraceLens for GPU utilization breakdown (compute vs communication vs idle). Each profiling window gets its own output directory; already-analyzed profiles are skipped on re-runs.
+  - **Tag TGS** — `tgs_tagger.py` extracts steady-state throughput (steps 5-14) and renames outputs. For running jobs, TGS is computed but renames are deferred until the job finishes.
+  - **Analyze traces** — TraceLens for GPU utilization breakdown (compute vs communication vs idle). Each profiling window gets its own output directory; already-analyzed profiles are skipped on re-runs. When checkpointing redirects profiler output to a shared directory, `analyze_job.py` parses `tensorboard_dir` from the log to locate the traces.
   - **Analyze HLO** — IRLens to inspect the compiled computation graph (collective patterns, fusion structure).
 
-The dispatcher is safe to re-run. It records `job_status` (completed / failed / cancelled / running / unknown) in `analysis.json` and uses it for staleness detection: finished jobs with up-to-date analysis are skipped automatically, while running or stale jobs are re-analyzed. Pass `-f` to force re-analysis regardless.
+The dispatcher is safe to re-run. It records `job_status` (completed / failed / cancelled / running / unknown) in `analysis.json` and uses it for staleness detection: finished jobs with up-to-date analysis are skipped automatically, while running or stale jobs are re-analyzed. Pass `-f` to force re-analysis regardless (staleness check only; does not force renames).
 
 3. **Browse results** — start the dashboard to visualize, compare, and download analysis results:
 

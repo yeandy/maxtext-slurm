@@ -25,7 +25,7 @@ The dispatcher detects which artifacts exist and runs only the relevant tools:
 - **`*.xplane.pb`** -> `TraceLens_generate_perf_report_jax`
 - **`xla_dump/*.gpu_after_optimizations.txt`** -> `IRLens_analyze_hlo_ir.py`
 
-For running jobs, pass `-f` to force TGS tagging (log file renamed, directory rename deferred):
+For running jobs, pass `-f` to force re-analysis (bypasses staleness check). TGS metrics are computed but renames are always deferred until the job finishes:
 
 ```bash
 python3 utils/analyze_job.py -f /outputs/<job>.log
@@ -49,6 +49,8 @@ python3 utils/analyze_job.py -f /outputs/<job>.log
 
 The `.log` file sits alongside the directory in `/outputs/`.
 
+When `enable_checkpointing=true`, `OUTPUT_PATH` points to a shared model-based directory instead of the per-job directory. Profiler traces (`*.xplane.pb`) and TensorBoard events may end up outside the job directory. `analyze_job.py` parses `Config param tensorboard_dir` from the log to locate these external artifacts. The resolved paths are stored in `analysis.json` under `artifacts.tensorboard_dir` and `artifacts.profile_dir` (when external). The dashboard serves external profile files transparently.
+
 ## Individual tools
 
 ### tgs_tagger (TGS metrics)
@@ -62,7 +64,7 @@ utils/tag_tgs.sh -f <log_file>       # force on running job
 
 - Discards warmup steps 0-4, measures from steps 5-14.
 - Needs `steps >= 15` for a full steady-state window.
-- With `-f` on a running job: renames log file immediately, defers directory rename.
+- With `-f` on a running job: renames log file immediately, defers directory rename until the job finishes.
 
 ### TraceLens (runtime trace analysis)
 
@@ -97,11 +99,12 @@ Find the HLO file: `<job_dir>/xla_dump/module_*.jit_train_step.*_gpu_after_optim
 
 The dispatcher and tgs_tagger detect running jobs by checking for the `JOB SUMMARY` log marker and file modification time (15 min threshold).
 
-- Without `-f`: TGS is printed but renaming is skipped.
-- With `-f`: log file is renamed (safe — shell writes via fd); directory rename is deferred.
+- `analyze_job.py` never forwards `-f` to `tgs_tagger`, so **no renames happen** during analysis of running jobs. Renames happen automatically on the next analysis after the job finishes.
+- Standalone `tgs_tagger -f` on a running job renames the log file (safe — fd follows inode) but defers the directory rename.
+- `analyze_job.py -f` only bypasses the staleness check; it does not force renames.
 - TraceLens needs a completed profiler trace; if `*.xplane.pb` doesn't exist yet, it's skipped.
 - IRLens works on running jobs if `xla_dump/` is already populated (XLA dumps during compilation, before training steps).
-- Re-running after the job finishes is handled automatically: the staleness check detects that `job_status` was `running` and triggers a full re-analysis, which renames the directory and picks up final artifacts.
+- Re-running after the job finishes is handled automatically: the staleness check detects that `job_status` was `running` and triggers a full re-analysis, which renames the log/directory and picks up final artifacts.
 
 ## Interpreting results
 
