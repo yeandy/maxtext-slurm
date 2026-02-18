@@ -80,6 +80,8 @@ TraceLens_generate_perf_report_jax \
 
 Find xplane files: `<job_dir>/**/tensorboard/plugins/profile/**/*.xplane.pb`
 
+`analyze_job.py` selects **node 0's xplane** for analysis (parsed from `SLURM_JOB_NODELIST` in the log). In SPMD training all hosts execute the same program, so node 0 is representative. Distributed profiling may scatter host traces across multiple timestamp directories — filtering by node 0 naturally deduplicates to one trace per profiling step.
+
 If TraceLens fails with protobuf/xprof errors (TF 2.19+), see [tracelens-patches.md](tracelens-patches.md) for required patches.
 
 ### IRLens (HLO static analysis)
@@ -139,4 +141,4 @@ Large per-GPU variance in compute % indicates load imbalance. High exposed comm 
 
 `analyze_job.py` also prints a dashboard hint at the end of its output — if the server is running it shows the URL, otherwise it shows the start command.
 
-Features: job listing with sortable metrics, per-step TGS/MFU/loss charts, HLO viewer with comm/compute filters, GPU utilization pie and per-GPU bar charts, file browser with Perfetto links for xplane traces, zip download, and side-by-side job comparison.
+Features: job listing with sortable metrics, per-step TGS/MFU/loss charts, HLO viewer with comm/compute filters, GPU utilization pie and per-GPU bar charts, file browser with Perfetto links for xplane traces, per-directory and full-job zip download, and side-by-side job comparison.

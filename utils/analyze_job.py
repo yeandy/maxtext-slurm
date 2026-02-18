@@ -60,7 +60,8 @@ RE_STEP_LINE = re.compile(
     r"Tokens/s/device:\s*([0-9.]+).*?loss:\s*([0-9.]+)"
 )
 RE_NNODES = re.compile(r"^(?:NNODES|SLURM_JOB_NUM_NODES)\s*=\s*(\d+)", re.MULTILINE)
-RE_JOB_NAME = re.compile(r"^SLURM_JOB_NAME\s*=\s*(.+)", re.MULTILINE)
+RE_NODELIST = re.compile(r"^SLURM_JOB_NODELIST\s*=\s*(.+)", re.MULTILINE)
+RE_JOB_NAME = re.compile(r"^(?:SLURM_JOB_NAME|JOB_NAME)\s*=\s*(.+)", re.MULTILINE)
 RE_MODEL_NAME = re.compile(r"^MODEL_NAME\s*=\s*(.+)", re.MULTILINE)
 RE_JOB_ID_HEADER = re.compile(r"^(?:SLURM_JOB_ID|JOB_ID)\s*=\s*(.+)", re.MULTILINE)
 RE_EXP_TAG = re.compile(r"^EXP_TAG\s*=\s*(.+)", re.MULTILINE)
@@ -222,6 +223,32 @@ def _log_has_tgs_data(log_file: Path) -> bool:
         return False
 
 
+def slurm_nodelist_first(nodelist: str) -> str:
+    """Return the first hostname from a Slurm NODELIST string.
+
+    Handles bracket notation (``chi[2815-2817,2820]`` → ``chi2815``),
+    comma-separated (``node01,node02`` → ``node01``), and plain strings.
+    """
+    bracket = nodelist.find("[")
+    if bracket != -1:
+        prefix = nodelist[:bracket]
+        close = nodelist.find("]", bracket)
+        inner = nodelist[bracket + 1 : close] if close != -1 else nodelist[bracket + 1 :]
+        first_num = inner.split(",")[0].split("-")[0]
+        return prefix + first_num
+    return nodelist.split(",")[0]
+
+
+def _parse_node0_hostname(log_text: str | None) -> str | None:
+    """Extract node 0's hostname from SLURM_JOB_NODELIST in the log."""
+    if not log_text:
+        return None
+    m = RE_NODELIST.search(log_text[:2000])
+    if not m:
+        return None
+    return slurm_nodelist_first(m.group(1).strip())
+
+
 def _find_buffer_assignment(job_dir: Path) -> Path | None:
     """Find the buffer assignment file for TraceLens communication analysis."""
     xla_dump = job_dir / "xla_dump"
@@ -248,23 +275,25 @@ def _parse_log_metadata(text: str, log_file: Path) -> dict:
     """Extract job metadata from the log header."""
     meta: dict = {}
 
-    m = RE_JOB_ID_HEADER.search(text[:2000])
+    header = text[:2000]
+
+    m = RE_JOB_ID_HEADER.search(header)
     if m:
         meta["job_id"] = m.group(1).strip()
 
-    m = RE_JOB_NAME.search(text[:2000])
+    m = RE_JOB_NAME.search(header)
     if m:
         meta["job_name"] = m.group(1).strip()
 
-    m = RE_MODEL_NAME.search(text[:2000])
+    m = RE_MODEL_NAME.search(header)
     if m:
         meta["model"] = m.group(1).strip()
 
-    m = RE_NNODES.search(text[:2000])
+    m = RE_NNODES.search(header)
     if m:
         meta["num_nodes"] = int(m.group(1))
 
-    m = RE_EXP_TAG.search(text[:2000])
+    m = RE_EXP_TAG.search(header)
     if m:
         meta["exp_tag"] = m.group(1).strip()
 
@@ -524,6 +553,14 @@ def _build_analysis_json(
                 d.name for d in tl_dir.iterdir()
                 if d.is_dir() and (d / "csvs").is_dir()
             )
+            # Filter to node 0's timestamps when possible
+            node0 = _parse_node0_hostname(log_text)
+            if node0 and xplane:
+                node0_ts = {f.parent.name for f in xplane
+                            if f.name.startswith(node0 + ".")}
+                filtered = [ts for ts in ts_dirs if ts in node0_ts]
+                if filtered:
+                    ts_dirs = filtered
             if ts_dirs:
                 artifacts["tracelens_profiles"] = ts_dirs
             artifacts["tracelens_dir"] = "tracelens/"
@@ -835,14 +872,20 @@ def process_job(
     elif job_dir:
         xplane_files = _find_xplane_files(job_dir, tensorboard_dir)
         if xplane_files:
-            # Group xplane files by profile timestamp directory.
-            # SPMD: all hosts run the same program, so we pick one host
-            # per timestamp.  We sort hosts within each group so the
-            # choice is deterministic (first alphabetically by filename).
-            by_ts: dict[str, list[Path]] = {}
-            for xf in xplane_files:
-                by_ts.setdefault(xf.parent.name, []).append(xf)
-            unique_xplanes = [sorted(hosts)[0] for hosts in by_ts.values()]
+            # SPMD: all hosts run the same program, so we only analyze
+            # node 0's xplane.  Distributed writes may scatter hosts across
+            # multiple timestamp dirs — filtering by node 0 naturally
+            # deduplicates: one node-0 file per profiling step.
+            node0 = _parse_node0_hostname(log_text)
+            unique_xplanes: list[Path] = []
+            if node0:
+                unique_xplanes = [f for f in xplane_files if f.name.startswith(node0 + ".")]
+            if not unique_xplanes:
+                # Fallback: one file per timestamp dir (first alphabetically)
+                by_ts: dict[str, list[Path]] = {}
+                for xf in xplane_files:
+                    by_ts.setdefault(xf.parent.name, []).append(xf)
+                unique_xplanes = [sorted(hosts)[0] for hosts in by_ts.values()]
 
             buffer_assignment = _find_buffer_assignment(job_dir)
             analyzed = 0
