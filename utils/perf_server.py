@@ -126,6 +126,21 @@ def _logical_steps(tgs: dict, num_nodes: int | None) -> int | None:
     return n // nn
 
 
+def _avg_per_step(raw: list, num_nodes: int) -> list:
+    """Average per-node-per-step values into one value per training step.
+
+    Raw data from tgs_tagger has one entry per node per step (N*S total).
+    This groups consecutive chunks of *num_nodes* and averages them.
+    """
+    if not raw or num_nodes <= 1:
+        return raw
+    out = []
+    for i in range(0, len(raw), num_nodes):
+        chunk = raw[i : i + num_nodes]
+        out.append(round(sum(chunk) / len(chunk), 3))
+    return out
+
+
 def _job_summary(j: dict, dir_name: str = "", include_per_step: bool = False) -> dict:
     """Build a job summary dict from analysis.json data."""
     tgs = j.get("tgs", {})
@@ -151,7 +166,8 @@ def _job_summary(j: dict, dir_name: str = "", include_per_step: bool = False) ->
         "idle_pct": tl.get("idle_time"),
     }
     if include_per_step:
-        summary["tgs_per_step"] = j.get("tgs_per_step", [])
+        nn = j.get("num_nodes") or 1
+        summary["tgs_per_step"] = _avg_per_step(j.get("tgs_per_step", []), nn)
     else:
         summary["timestamp"] = j.get("timestamp", "")
         summary["analyzed_at"] = j.get("analyzed_at", "")
@@ -407,14 +423,23 @@ async def get_job_tracelens(job_id: str, profile: str | None = None):
 
 @app.get("/api/jobs/{job_id}/tgs-steps")
 async def get_tgs_steps(job_id: str):
-    """Per-step TGS values for charting."""
+    """Per-step TGS values for charting.
+
+    Raw data has one entry per node per step (N*S total).  This endpoint
+    averages across nodes so the frontend gets one value per training step.
+    """
     job_dir = _find_job_dir(job_id)
     data = _load_analysis(job_dir)
+    nn = data.get("num_nodes") or 1
+
     return {
-        "tgs_per_step": data.get("tgs_per_step", []),
-        "mfu_per_step": data.get("mfu_per_step", []),
-        "loss_per_step": data.get("loss_per_step", []),
-        "seconds_per_step": data.get("seconds_per_step", []),
+        "tgs_per_step": _avg_per_step(data.get("tgs_per_step", []), nn),
+        "mfu_per_step": _avg_per_step(data.get("mfu_per_step", []), nn),
+        "loss_per_step": _avg_per_step(data.get("loss_per_step", []), nn),
+        "seconds_per_step": _avg_per_step(data.get("seconds_per_step", []), nn),
+        "step_begin": data.get("step_begin", 0),
+        "step_end": data.get("step_end"),
+        "num_nodes": nn,
         "tgs": data.get("tgs", {}),
     }
 
