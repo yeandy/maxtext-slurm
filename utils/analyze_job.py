@@ -160,9 +160,57 @@ def _find_hlo_file(job_dir: Path) -> Path | None:
     return candidates[-1]
 
 
-def _find_xplane_files(job_dir: Path) -> list[Path]:
-    """Find all *.xplane.pb files under the job directory."""
-    return sorted(job_dir.rglob("*.xplane.pb"))
+def _container_to_host_path(container_path: str, outputs_dir: Path) -> Path:
+    """Translate an in-container ``/outputs/...`` path to the host-side equivalent."""
+    container_path = container_path.rstrip("/")
+    prefix = "/outputs/"
+    if container_path.startswith(prefix):
+        return outputs_dir / container_path[len(prefix):]
+    return Path(container_path)
+
+
+def _extract_config_param(log_text: str | None, param: str) -> str | None:
+    """Extract a MaxText ``Config param <param>: <value>`` from log text."""
+    if not log_text:
+        return None
+    m = re.search(rf"Config param {re.escape(param)}:\s*(\S+)", log_text)
+    return m.group(1) if m else None
+
+
+def _extract_tensorboard_dir(log_text: str | None, outputs_dir: Path) -> Path | None:
+    """Extract the tensorboard_dir from MaxText log output.
+
+    MaxText logs ``Config param tensorboard_dir: <path>`` where ``<path>``
+    is an in-container path like ``/outputs/<model>/...``.  We translate
+    the ``/outputs/`` prefix to the host-side *outputs_dir* so that
+    ``analyze_job.py`` can locate profile artifacts regardless of whether
+    checkpointing redirected them to a shared directory.
+    """
+    raw = _extract_config_param(log_text, "tensorboard_dir")
+    if not raw:
+        return None
+    host_path = _container_to_host_path(raw, outputs_dir)
+    return host_path if host_path.is_dir() else None
+
+
+def _find_xplane_files(
+    job_dir: Path,
+    tensorboard_dir: Path | None = None,
+) -> list[Path]:
+    """Find all *.xplane.pb files, falling back to an external tensorboard_dir.
+
+    First searches *job_dir* recursively.  If nothing is found and an
+    external *tensorboard_dir* is provided (parsed from the log), searches
+    ``<tensorboard_dir>/plugins/profile/`` instead.
+    """
+    found = sorted(job_dir.rglob("*.xplane.pb"))
+    if found:
+        return found
+    if tensorboard_dir:
+        profile_root = tensorboard_dir / "plugins" / "profile"
+        if profile_root.is_dir():
+            found = sorted(profile_root.rglob("*.xplane.pb"))
+    return found
 
 
 def _log_has_tgs_data(log_file: Path) -> bool:
@@ -413,8 +461,15 @@ def _build_analysis_json(
     log_file: Path | None,
     log_text: str | None,
     steps: list[dict] | None,
+    tensorboard_dir: Path | None = None,
 ) -> dict:
-    """Build the analysis.json content from parsed data."""
+    """Build the analysis.json content from parsed data.
+
+    *tensorboard_dir* is the host-side tensorboard directory parsed from
+    the MaxText log.  When it lives outside *job_dir* (checkpointing
+    jobs), the external profile path is recorded so the dashboard can
+    serve xplane files from the shared directory.
+    """
     result: dict = {"analyzed_at": datetime.now(tz=timezone.utc).isoformat()}
 
     # Metadata from log
@@ -434,7 +489,7 @@ def _build_analysis_json(
         result["step_begin"] = unique_steps[0]
         result["step_end"] = unique_steps[-1]
 
-    # Artifact paths (relative to job_dir)
+    # Artifact paths (relative to job_dir where possible)
     if job_dir:
         artifacts: dict = {}
         if log_file:
@@ -447,11 +502,17 @@ def _build_analysis_json(
         if hlo:
             artifacts["hlo_file"] = str(hlo.relative_to(job_dir))
 
-        xplane = _find_xplane_files(job_dir)
+        xplane = _find_xplane_files(job_dir, tensorboard_dir)
         if xplane:
-            artifacts["xplane_files"] = [
-                str(f.relative_to(job_dir)) for f in xplane
-            ]
+            local = [str(f.relative_to(job_dir)) for f in xplane
+                     if f.is_relative_to(job_dir)]
+            if local:
+                artifacts["xplane_files"] = local
+            has_external = any(not f.is_relative_to(job_dir) for f in xplane)
+            if has_external and tensorboard_dir:
+                artifacts["profile_dir"] = str(
+                    tensorboard_dir / "plugins" / "profile"
+                )
 
         buf = _find_buffer_assignment(job_dir)
         if buf:
@@ -466,6 +527,14 @@ def _build_analysis_json(
             if ts_dirs:
                 artifacts["tracelens_profiles"] = ts_dirs
             artifacts["tracelens_dir"] = "tracelens/"
+
+        if tensorboard_dir:
+            artifacts["tensorboard_dir"] = str(tensorboard_dir)
+            run_name = _extract_config_param(log_text, "run_name")
+            if run_name:
+                event_logdir = tensorboard_dir / run_name
+                if event_logdir.is_dir():
+                    artifacts["tensorboard_logdir"] = str(event_logdir)
 
         result["artifacts"] = artifacts
 
@@ -572,12 +641,14 @@ def _resolve_job_dir(path: Path) -> Path | None:
 # ── Tool runners ─────────────────────────────────────────────────────────────
 
 
-def _run_tgs_tagger(log_file: Path, force: bool) -> int:
-    """Run tgs_tagger.py on the log file."""
-    cmd = [sys.executable, str(SCRIPT_DIR / "tgs_tagger.py")]
-    if force:
-        cmd.append("-f")
-    cmd.append(str(log_file))
+def _run_tgs_tagger(log_file: Path) -> int:
+    """Run tgs_tagger.py on the log file.
+
+    Never passes ``-f`` — tgs_tagger will skip renames if the job is
+    still running and perform them once it finishes.  ``analyze_job -f``
+    only bypasses the staleness check; it does not force renames.
+    """
+    cmd = [sys.executable, str(SCRIPT_DIR / "tgs_tagger.py"), str(log_file)]
     result = _run(cmd, "tgs_tagger")
     return result.returncode
 
@@ -707,11 +778,17 @@ def process_job(
 
     rc = 0
 
+    # ── Resolve tensorboard_dir from log ──
+    outputs_dir = job_dir.parent if job_dir else None
+    tensorboard_dir = _extract_tensorboard_dir(log_text, outputs_dir) if outputs_dir else None
+    if tensorboard_dir and job_dir and not tensorboard_dir.is_relative_to(job_dir):
+        _step(f"External tensorboard_dir: {tensorboard_dir}")
+
     # ── TGS tagger ──
     if skip_tgs:
         _skip("tgs_tagger", "skipped (--skip-tgs)")
     elif log_file and _log_has_tgs_data(log_file):
-        if _run_tgs_tagger(log_file, force) != 0:
+        if _run_tgs_tagger(log_file) != 0:
             rc = 1
         # tgs_tagger may have renamed log file and/or job dir — re-resolve
         if job_dir and not job_dir.exists():
@@ -756,7 +833,7 @@ def process_job(
     if skip_tracelens:
         _skip("TraceLens", "skipped (--skip-tracelens)")
     elif job_dir:
-        xplane_files = _find_xplane_files(job_dir)
+        xplane_files = _find_xplane_files(job_dir, tensorboard_dir)
         if xplane_files:
             # Group xplane files by profile timestamp directory.
             # SPMD: all hosts run the same program, so we pick one host
@@ -794,7 +871,9 @@ def process_job(
 
     # ── Save analysis.json ──
     if job_dir and job_dir.is_dir():
-        analysis = _build_analysis_json(job_dir, log_file, log_text, steps)
+        analysis = _build_analysis_json(
+            job_dir, log_file, log_text, steps, tensorboard_dir,
+        )
         _save_analysis_json(job_dir, analysis)
 
     # ── Summary ──
@@ -804,7 +883,7 @@ def process_job(
         artifact_names.append("TGS data")
     if job_dir and _find_hlo_file(job_dir):
         artifact_names.append("HLO dump")
-    if job_dir and _find_xplane_files(job_dir):
+    if job_dir and _find_xplane_files(job_dir, tensorboard_dir):
         artifact_names.append("xplane trace")
     if artifact_names:
         print(f"  {GREEN}Available artifacts:{RESET} {', '.join(artifact_names)}")
@@ -872,14 +951,14 @@ examples:
   %(prog)s outputs/12345-JAX-llama2-70b.log
   %(prog)s outputs/12345-JAX-llama2-70b/
   %(prog)s outputs/local_2026*
-  %(prog)s -f outputs/12345-JAX-llama2-70b.log    # force on running job
+  %(prog)s -f outputs/12345-JAX-llama2-70b.log    # force re-analysis
   %(prog)s --skip-tracelens outputs/*.log          # skip TraceLens
 """,
     )
     parser.add_argument(
         "-f", "--force",
         action="store_true",
-        help="bypass staleness check and forward -f to tgs_tagger (force rename on running jobs)",
+        help="bypass staleness check and force re-analysis even if analysis.json is current",
     )
     parser.add_argument(
         "--skip-tgs",

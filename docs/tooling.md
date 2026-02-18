@@ -66,7 +66,7 @@ Detects available artifacts in a job's output directory and dispatches the appro
 # Examples:
 #   utils/analyze_job.py outputs/12345-run.log                # analyze a finished job
 #   utils/analyze_job.py outputs/12345-JAX-llama2-70b/        # job dir
-#   utils/analyze_job.py -f outputs/12345-run.log             # force on running job
+#   utils/analyze_job.py -f outputs/12345-run.log             # force re-analysis (bypass staleness check)
 #   utils/analyze_job.py --skip-tracelens outputs/*.log       # skip TraceLens
 ```
 
