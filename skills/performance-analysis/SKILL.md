@@ -7,9 +7,12 @@ description: Analyze MaxText training job performance using tgs_tagger, TraceLen
 
 Post-training (or mid-training) analysis pipeline. Detects available artifacts in a job's output directory and runs the appropriate tools.
 
-## Quick start
+## Workflow (follow this order)
 
-Run the dispatcher on a job directory, log file, or glob:
+1. **Run `analyze_job.py` first** — before reading `analysis.json`. The dispatcher automatically detects staleness: it skips re-analysis when the job is finished and `analysis.json` is newer than the log file; otherwise it re-runs. Pass `-f` to force re-analysis regardless.
+2. Read the generated `analysis.json` and any tool output.
+3. Summarize key findings per the "Interpreting results" table below.
+4. Ensure the web dashboard is running (see "Web dashboard" section).
 
 ```bash
 python3 utils/analyze_job.py /outputs/<job>.log
@@ -28,8 +31,6 @@ For running jobs, pass `-f` to force TGS tagging (log file renamed, directory re
 python3 utils/analyze_job.py -f /outputs/<job>.log
 ```
 
-Re-run as often as needed — the dispatcher is idempotent.
-
 ## Job output layout
 
 ```
@@ -42,8 +43,8 @@ Re-run as often as needed — the dispatcher is idempotent.
   <run_name>/tensorboard/plugins/profile/<ts>/
     <hostname>.xplane.pb                        # if profiler=xplane
   tracelens/                                    # created by TraceLens
-    csvs/*.csv
-    *_report.xlsx
+    <ts>/csvs/*.csv                               # per profiling window
+    <ts>/*_report.xlsx
 ```
 
 The `.log` file sits alongside the directory in `/outputs/`.
@@ -71,8 +72,8 @@ GPU kernel utilization, GEMM performance, and communication patterns from xplane
 pip install git+https://github.com/AMD-AGI/TraceLens.git
 TraceLens_generate_perf_report_jax \
     --profile_path <xplane.pb> \
-    --output_xlsx_path <job_dir>/tracelens/report.xlsx \
-    --output_csvs_dir <job_dir>/tracelens/csvs
+    --output_xlsx_path <job_dir>/tracelens/<ts>/report.xlsx \
+    --output_csvs_dir <job_dir>/tracelens/<ts>/csvs
 ```
 
 Find xplane files: `<job_dir>/**/tensorboard/plugins/profile/**/*.xplane.pb`
@@ -100,7 +101,7 @@ The dispatcher and tgs_tagger detect running jobs by checking for the `JOB SUMMA
 - With `-f`: log file is renamed (safe — shell writes via fd); directory rename is deferred.
 - TraceLens needs a completed profiler trace; if `*.xplane.pb` doesn't exist yet, it's skipped.
 - IRLens works on running jobs if `xla_dump/` is already populated (XLA dumps during compilation, before training steps).
-- Re-run after the job finishes to rename the directory and pick up final artifacts.
+- Re-running after the job finishes is handled automatically: the staleness check detects that `job_status` was `running` and triggers a full re-analysis, which renames the directory and picks up final artifacts.
 
 ## Interpreting results
 

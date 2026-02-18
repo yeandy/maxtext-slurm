@@ -85,10 +85,12 @@ Generate a full performance report from an xplane trace:
 
 ```bash
 TraceLens_generate_perf_report_jax \
-    --profile_path <job_dir>/**/plugins/profile/**/*.xplane.pb \
-    --output_xlsx_path <job_dir>/tracelens/report.xlsx \
-    --output_csvs_dir <job_dir>/tracelens/csvs
+    --profile_path <job_dir>/**/plugins/profile/<timestamp>/*.xplane.pb \
+    --output_xlsx_path <job_dir>/tracelens/<timestamp>/report.xlsx \
+    --output_csvs_dir <job_dir>/tracelens/<timestamp>/csvs
 ```
+
+When periodic profiling is enabled (`profile_periodically_period > 0`), each profiling window produces a separate xplane trace under its own timestamp directory. `analyze_job.py` handles this automatically — giving each profile its own TraceLens output directory and skipping profiles that have already been analyzed.
 
 Key output columns in `csvs/gpu_events_averages.csv`:
 
@@ -172,13 +174,15 @@ The rest of `train_env.sh` exports environment variables that control JAX, NCCL/
 
 ```bash
 utils/analyze_job.py outputs/<job>.log          # finished job
-utils/analyze_job.py -f outputs/<job>.log       # running job (re-run as needed)
+utils/analyze_job.py -f outputs/<job>.log       # force re-analysis (or running job)
 ```
 
 This runs whichever of the following are applicable:
   - **Tag TGS** — `tgs_tagger.py` extracts steady-state throughput (steps 5-14) and renames outputs.
-  - **Analyze traces** — TraceLens for GPU utilization breakdown (compute vs communication vs idle).
+  - **Analyze traces** — TraceLens for GPU utilization breakdown (compute vs communication vs idle). Each profiling window gets its own output directory; already-analyzed profiles are skipped on re-runs.
   - **Analyze HLO** — IRLens to inspect the compiled computation graph (collective patterns, fusion structure).
+
+The dispatcher is safe to re-run. It records `job_status` (completed / failed / cancelled / running / unknown) in `analysis.json` and uses it for staleness detection: finished jobs with up-to-date analysis are skipped automatically, while running or stale jobs are re-analyzed. Pass `-f` to force re-analysis regardless.
 
 3. **Browse results** — start the dashboard to visualize, compare, and download analysis results:
 
@@ -187,6 +191,6 @@ utils/perf_server.py                             # http://localhost:8080
 utils/perf_server.py --host 0.0.0.0 --port 8080  # remote access
 ```
 
-Requires `pip install fastapi uvicorn`. The dashboard reads `analysis.json` files written by `analyze_job.py`.
+Requires `pip install fastapi uvicorn`. The dashboard reads `analysis.json` files written by `analyze_job.py`. When periodic profiling produced multiple TraceLens profiles, the dashboard defaults to the latest and offers a profile selector.
 
 4. **Tune** — adjust XLA flags and environment variables in `train_env.sh` based on findings.

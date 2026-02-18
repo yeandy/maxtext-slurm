@@ -58,7 +58,7 @@ See [Notifications: slurm_job_monitor.sh](notifications.md#slurm_job_monitorsh) 
 
 ## Analyze job performance
 
-Detects available artifacts in a job's output directory and dispatches the appropriate analysis tools (tgs_tagger, TraceLens, IRLens). Saves structured results to `analysis.json` in the job directory. Safe to re-run on the same job — useful for monitoring running jobs as new artifacts appear. See [Performance](performance.md) for details on each tool and the analysis workflow.
+Detects available artifacts in a job's output directory and dispatches the appropriate analysis tools (tgs_tagger, TraceLens, IRLens). Saves structured results to `analysis.json` in the job directory, including a `job_status` field (completed / failed / cancelled / running / unknown) used for staleness detection. Re-runs are fast: finished jobs with up-to-date analysis are skipped automatically; TraceLens results are cached per profiling window. See [Performance](performance.md) for details on each tool and the analysis workflow.
 
 ```
 # utils/analyze_job.py [-f] [--skip-tgs] [--skip-irlens] [--skip-tracelens] [PATH ...]

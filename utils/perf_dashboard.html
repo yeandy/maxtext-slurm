@@ -53,6 +53,7 @@ tr:hover td { background: var(--bg2); }
 .badge-yellow { background: rgba(210,153,34,0.15); color: var(--yellow); }
 .badge-red { background: rgba(248,81,73,0.15); color: var(--red); }
 .badge-gray { background: var(--bg3); color: var(--fg2); }
+.badge-purple { background: rgba(188,140,255,0.15); color: var(--purple); }
 input[type="checkbox"] { cursor: pointer; }
 
 /* Tabs */
@@ -164,6 +165,10 @@ function fmtDate(iso) {
   try { return new Date(iso).toLocaleDateString(undefined, {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
   catch { return iso.slice(0,16); }
 }
+function statusBadge(s) {
+  const map = {completed:'badge-green',failed:'badge-red',cancelled:'badge-yellow',running:'badge-purple',unknown:'badge-gray'};
+  return `<span class="badge ${map[s]||'badge-gray'}">${s||'unknown'}</span>`;
+}
 
 // ── Chart colors (theme-aware) ──
 function chartColors() {
@@ -223,6 +228,7 @@ async function renderDashboard(forceRefresh) {
       <thead><tr>
         <th style="width:30px"><input type="checkbox" onchange="toggleAllCheckboxes(this)"></th>
         <th data-sort="job_id">Job</th>
+        <th data-sort="job_status">Status</th>
         <th data-sort="model">Model</th>
         <th data-sort="exp_tag">EXP_TAG</th>
         <th data-sort="num_nodes" class="num">Nodes</th>
@@ -240,6 +246,7 @@ async function renderDashboard(forceRefresh) {
     html += `<tr>
       <td><input type="checkbox" value="${j.job_id}" ${checked} onchange="toggleJob(this)"></td>
       <td><a href="#/job/${j.job_id}">${j.job_id}</a></td>
+      <td>${statusBadge(j.job_status)}</td>
       <td>${j.model || '—'}</td>
       <td>${j.exp_tag || '—'}</td>
       <td class="num">${j.num_nodes ?? '—'}</td>
@@ -332,10 +339,11 @@ async function renderJobDetail(jobId) {
   const tl = data.tracelens_summary || {};
   const artifacts = data.artifacts || {};
 
+  const js = data.job_status || {};
   let html = `
     <p style="margin-bottom:16px"><a href="#/">&larr; Dashboard</a></p>
-    <h2 style="margin-bottom:4px">Job ${data.job_id || jobId}${data.job_name ? ' — ' + data.job_name : ''}</h2>
-    <p style="color:var(--fg2);font-size:13px;margin-bottom:20px">${data.model || ''} &middot; ${data.exp_tag ? data.exp_tag + ' &middot; ' : ''}${data.num_nodes || '?'} nodes &middot; ${data.dir_name || ''}</p>
+    <h2 style="margin-bottom:4px">Job ${data.job_id || jobId}${data.job_name ? ' — ' + data.job_name : ''} ${statusBadge(js.status)}</h2>
+    <p style="color:var(--fg2);font-size:13px;margin-bottom:20px">${data.model || ''} &middot; ${data.exp_tag ? data.exp_tag + ' &middot; ' : ''}${data.num_nodes || '?'} nodes &middot; ${data.dir_name || ''}${js.exit_code != null ? ' &middot; exit ' + js.exit_code : ''}</p>
 
     <div class="cards">
       <div class="card"><div class="label">Steady TGS</div><div class="value">${fmt(steady?.mean, 1)}</div><div class="sub">std ${fmt(steady?.std, 2)}, n=${steady?.n || 0} (${steady?.range || '—'})</div></div>
@@ -496,16 +504,29 @@ function filterHLO() {
 
 // ── GPU tab ──
 let gpuLoaded = {};
-async function loadGPU(jobId) {
-  if (gpuLoaded[jobId]) return;
+async function loadGPU(jobId, profile) {
+  if (!profile && gpuLoaded[jobId]) return;
+  if (profile) { delete gpuLoaded[jobId]; if (chartInstances.gpuPie) { chartInstances.gpuPie.destroy(); delete chartInstances.gpuPie; } if (chartInstances.gpuBars) { chartInstances.gpuBars.destroy(); delete chartInstances.gpuBars; } }
   const el = document.getElementById('tc-gpu');
   try {
-    const d = await api(`/api/jobs/${jobId}/tracelens`);
+    const qs = profile ? `?profile=${encodeURIComponent(profile)}` : '';
+    const d = await api(`/api/jobs/${jobId}/tracelens${qs}`);
     const c = chartColors();
     const avg = d.gpu_averages;
     const perGpu = d.gpu_per_gpu;
     const kcat = d.kernel_category;
     let html = '';
+
+    if (d.profiles && d.profiles.length > 1) {
+      html += '<div class="toolbar"><label style="font-size:13px;color:var(--fg2)">Profile window: </label><select id="gpu-profile-select" onchange="loadGPU(\'' + jobId + '\', this.value)">';
+      for (const p of d.profiles) {
+        const sel = p === d.selected_profile ? ' selected' : '';
+        html += `<option value="${p}"${sel}>${p}</option>`;
+      }
+      html += '</select></div>';
+    } else if (d.selected_profile) {
+      html += `<p style="color:var(--fg2);font-size:12px;margin-bottom:8px">Profile: ${d.selected_profile}</p>`;
+    }
 
     if (avg) {
       html += '<div class="chart-box"><canvas id="chart-gpu-pie"></canvas></div>';
@@ -697,6 +718,7 @@ async function renderCompare() {
     valid.forEach(j => html += `<th><a href="#/job/${j.job_id}">${j.job_id}</a></th>`);
     html += '</tr></thead><tbody>';
     const rows = [
+      ['Status', j => statusBadge(j.job_status)],
       ['Model', j => j.model || '—'],
       ['EXP_TAG', j => j.exp_tag || '—'],
       ['Nodes', j => j.num_nodes ?? '—'],
