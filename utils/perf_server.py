@@ -131,6 +131,7 @@ def _job_summary(j: dict, dir_name: str = "", include_per_step: bool = False) ->
     tgs = j.get("tgs", {})
     steady = tgs.get("steady")
     tl = j.get("tracelens_summary", {})
+    js = j.get("job_status", {})
     summary = {
         "job_id": j.get("job_id", ""),
         "job_name": j.get("job_name", ""),
@@ -138,6 +139,8 @@ def _job_summary(j: dict, dir_name: str = "", include_per_step: bool = False) ->
         "exp_tag": j.get("exp_tag", ""),
         "num_nodes": j.get("num_nodes"),
         "dir_name": dir_name or j.get("_dir_name", ""),
+        "job_status": js.get("status", "unknown"),
+        "exit_code": js.get("exit_code"),
         "tgs_steady": steady.get("mean") if steady else None,
         "tgs_all": tgs.get("all", {}).get("mean") if tgs.get("all") else None,
         "num_steps": _logical_steps(tgs, j.get("num_nodes")),
@@ -324,14 +327,37 @@ def _parse_kernel_category_csv(path: Path) -> list[dict] | None:
         return None
 
 
-@app.get("/api/jobs/{job_id}/tracelens")
-async def get_job_tracelens(job_id: str):
-    """Parse and return TraceLens CSV data as JSON."""
-    job_dir = _find_job_dir(job_id)
-    csvs_dir = job_dir / "tracelens" / "csvs"
-    if not csvs_dir.is_dir():
-        raise HTTPException(404, "No TraceLens data found")
+def _find_tracelens_profiles(job_dir: Path) -> list[str]:
+    """List available TraceLens profile timestamps (sorted, latest last)."""
+    tl_dir = job_dir / "tracelens"
+    if not tl_dir.is_dir():
+        return []
+    return sorted(
+        d.name for d in tl_dir.iterdir()
+        if d.is_dir() and (d / "csvs").is_dir()
+    )
 
+
+def _resolve_tracelens_csvs(job_dir: Path, profile: str | None) -> Path | None:
+    """Resolve the csvs directory for a given profile (or latest)."""
+    tl_dir = job_dir / "tracelens"
+    if not tl_dir.is_dir():
+        return None
+
+    if profile:
+        csvs = tl_dir / profile / "csvs"
+        return csvs if csvs.is_dir() else None
+
+    # Default: latest per-timestamp profile
+    profiles = _find_tracelens_profiles(job_dir)
+    if profiles:
+        return tl_dir / profiles[-1] / "csvs"
+
+    return None
+
+
+def _parse_tracelens_csvs(csvs_dir: Path) -> dict:
+    """Parse all TraceLens CSVs from a single csvs directory."""
     result: dict = {}
 
     avg = _parse_gpu_events_csv(csvs_dir / "gpu_events_averages.csv")
@@ -349,6 +375,31 @@ async def get_job_tracelens(job_id: str):
         result["kernel_category"] = kcat
 
     result["csv_files"] = [f.name for f in sorted(csvs_dir.glob("*.csv"))]
+    return result
+
+
+@app.get("/api/jobs/{job_id}/tracelens")
+async def get_job_tracelens(job_id: str, profile: str | None = None):
+    """Parse and return TraceLens CSV data as JSON.
+
+    Query params:
+      profile: optional timestamp to select a specific profiling window.
+               Defaults to the latest profile.
+
+    Response includes a ``profiles`` list so the frontend can offer a
+    profile selector when periodic profiling produced multiple windows.
+    """
+    job_dir = _find_job_dir(job_id)
+    csvs_dir = _resolve_tracelens_csvs(job_dir, profile)
+    if not csvs_dir:
+        raise HTTPException(404, "No TraceLens data found")
+
+    result = _parse_tracelens_csvs(csvs_dir)
+
+    profiles = _find_tracelens_profiles(job_dir)
+    if profiles:
+        result["profiles"] = profiles
+        result["selected_profile"] = profile or profiles[-1]
 
     return result
 

@@ -5,12 +5,17 @@ Thin orchestrator that checks a job's output directory for available
 artifacts (log with TGS data, XLA dump, xplane trace) and dispatches
 to the corresponding tools (tgs_tagger, IRLens, TraceLens).
 
-After running tools, saves a structured ``analysis.json`` in the job
-directory for consumption by ``perf_server.py`` (web dashboard).
+After running tools, saves a structured ``analysis.json`` — including a
+``job_status`` field (completed/failed/cancelled/running/unknown) — in
+the job directory for consumption by ``perf_server.py`` (web dashboard).
 
-Safe to re-run on the same job (idempotent). For running jobs, pass -f
-to allow tgs_tagger to rename the log file while deferring the directory
-rename until the job completes.
+Staleness detection: re-analysis is skipped when ``analysis.json`` is
+newer than the log file and the recorded job status is terminal.  Pass
+``-f`` to bypass this check and force a full re-run.
+
+TraceLens outputs are cached per profiling window under
+``tracelens/<timestamp>/``; already-analyzed windows are skipped on
+subsequent runs.
 
 Usage:
     analyze_job.py [OPTIONS] [PATH ...]
@@ -31,6 +36,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -59,7 +65,12 @@ RE_MODEL_NAME = re.compile(r"^MODEL_NAME\s*=\s*(.+)", re.MULTILINE)
 RE_JOB_ID_HEADER = re.compile(r"^(?:SLURM_JOB_ID|JOB_ID)\s*=\s*(.+)", re.MULTILINE)
 RE_EXP_TAG = re.compile(r"^EXP_TAG\s*=\s*(.+)", re.MULTILINE)
 RE_PASSTHROUGH = re.compile(r'^PASSTHROUGH_ARGS\s*=\s*"?(.*?)"?\s*$', re.MULTILINE)
+RE_JOB_SUMMARY = re.compile(r"^=+ JOB SUMMARY =+", re.MULTILINE)
+RE_JOB_STATUS = re.compile(
+    r"Status:\s*(?:\033\[\d+m)*(SUCCESS|FAILED)\s*\(exit\s+(\d+)\)",
+)
 _LOG_SUFFIXES = {".log", ".out"}
+_RUNNING_THRESHOLD_S = 900  # 15 min — accommodates long checkpoint writes
 
 # Constants matching tgs_tagger.py
 WARMUP_STEPS = 5
@@ -233,6 +244,51 @@ def _parse_log_metadata(text: str, log_file: Path) -> dict:
     return meta
 
 
+# Signal-based exit codes that indicate external termination, not a
+# training bug.  128+N where N is the signal number.
+_CANCEL_EXIT_CODES = {
+    130,  # SIGINT  (Ctrl-C)
+    143,  # SIGTERM (scancel, Slurm timeout)
+}
+
+
+def _detect_job_status(text: str, log_file: Path) -> dict:
+    """Determine job status from log text and file age.
+
+    Returns a dict with:
+      - status:    completed | failed | cancelled | running | unknown
+      - exit_code: int or None
+
+    Semantics:
+      completed — JOB SUMMARY with exit 0
+      failed    — JOB SUMMARY with non-zero exit (training error)
+      cancelled — JOB SUMMARY with signal exit code (scancel / timeout / ^C)
+      running   — no JOB SUMMARY, log modified within last 15 min
+      unknown   — no JOB SUMMARY, log stale (SIGKILL / OOM / orphaned)
+    """
+    if RE_JOB_SUMMARY.search(text):
+        m = RE_JOB_STATUS.search(text)
+        if m:
+            word, code = m.group(1), int(m.group(2))
+            if word == "SUCCESS":
+                status = "completed"
+            elif code in _CANCEL_EXIT_CODES:
+                status = "cancelled"
+            else:
+                status = "failed"
+            return {"status": status, "exit_code": code}
+        return {"status": "completed", "exit_code": None}
+
+    try:
+        age = time.time() - log_file.stat().st_mtime
+        if age < _RUNNING_THRESHOLD_S:
+            return {"status": "running", "exit_code": None}
+    except OSError:
+        pass
+
+    return {"status": "unknown", "exit_code": None}
+
+
 def _parse_step_data(text: str) -> list[dict]:
     """Parse per-step metrics from log text.
 
@@ -305,19 +361,10 @@ def _compute_tgs_summary(steps: list[dict], num_nodes: int = 1) -> dict:
     return result
 
 
-def _parse_tracelens_summary(job_dir: Path) -> dict | None:
-    """Parse TraceLens gpu_events_averages.csv for summary percentages.
-
-    The CSV has rows like:
-        type,time ms,percent
-        computation_time,22376.48,74.57
-        exposed_comm_time,7605.25,25.34
-    Each metric is a row keyed by the ``type`` column.
-    """
-    csv_path = job_dir / "tracelens" / "csvs" / "gpu_events_averages.csv"
+def _parse_one_tracelens_csv(csv_path: Path) -> dict | None:
+    """Parse a single gpu_events_averages.csv for summary percentages."""
     if not csv_path.is_file():
         return None
-
     try:
         summary: dict = {}
         with open(csv_path, newline="") as f:
@@ -334,7 +381,30 @@ def _parse_tracelens_summary(job_dir: Path) -> dict | None:
                         pass
         return summary if summary else None
     except (OSError, csv.Error):
-        pass
+        return None
+
+
+def _parse_tracelens_summary(job_dir: Path) -> dict | None:
+    """Parse TraceLens gpu_events_averages.csv for summary percentages.
+
+    Each profiling window lives under ``tracelens/<ts>/csvs/``.  When
+    multiple profiles exist (periodic profiling), uses the latest
+    timestamp directory (most representative of steady-state training).
+    """
+    tl_dir = job_dir / "tracelens"
+    if not tl_dir.is_dir():
+        return None
+
+    ts_dirs = sorted(
+        d for d in tl_dir.iterdir()
+        if d.is_dir() and (d / "csvs").is_dir()
+    )
+    # Use the latest timestamp (most representative of steady-state)
+    for ts_dir in reversed(ts_dirs):
+        result = _parse_one_tracelens_csv(ts_dir / "csvs" / "gpu_events_averages.csv")
+        if result:
+            return result
+
     return None
 
 
@@ -350,6 +420,7 @@ def _build_analysis_json(
     # Metadata from log
     if log_text and log_file:
         result.update(_parse_log_metadata(log_text, log_file))
+        result["job_status"] = _detect_job_status(log_text, log_file)
 
     # Per-step data and TGS summary
     if steps:
@@ -388,6 +459,12 @@ def _build_analysis_json(
 
         tl_dir = job_dir / "tracelens"
         if tl_dir.is_dir():
+            ts_dirs = sorted(
+                d.name for d in tl_dir.iterdir()
+                if d.is_dir() and (d / "csvs").is_dir()
+            )
+            if ts_dirs:
+                artifacts["tracelens_profiles"] = ts_dirs
             artifacts["tracelens_dir"] = "tracelens/"
 
         result["artifacts"] = artifacts
@@ -409,6 +486,49 @@ def _save_analysis_json(job_dir: Path, data: dict) -> None:
         _step(f"Saved {out}")
     except OSError as e:
         _warn(f"Failed to write analysis.json: {e}")
+
+
+def _analysis_is_current(job_dir: Path, log_file: Path | None) -> bool:
+    """Check if analysis.json is up-to-date relative to the log file.
+
+    Returns True (skip re-analysis) only when ALL of these hold:
+      1. analysis.json exists and is newer than the log file
+      2. The recorded job_status is not "running"
+
+    A "running" status always triggers re-analysis because the job may
+    have finished (or crashed) since. All other statuses are terminal:
+    completed/failed/cancelled have a JOB SUMMARY and a final log;
+    unknown means the log is stale with no summary (SIGKILL/OOM) so
+    re-analyzing won't produce different results.
+    """
+    analysis_path = job_dir / "analysis.json"
+    if not analysis_path.is_file():
+        return False
+    if not log_file or not log_file.is_file():
+        return False
+
+    try:
+        analysis_mtime = analysis_path.stat().st_mtime
+        log_mtime = log_file.stat().st_mtime
+    except OSError:
+        return False
+
+    if log_mtime > analysis_mtime:
+        return False
+
+    # Only "running" is non-terminal. A running job's log will eventually
+    # either grow (caught by mtime check above) or go stale (transitions
+    # to "unknown" on next analysis). All other statuses are final.
+    try:
+        with open(analysis_path) as f:
+            data = json.load(f)
+        status = data.get("job_status", {}).get("status")
+        if status == "running":
+            return False
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return False
+
+    return True
 
 
 # ── Resolve job directory from input path ────────────────────────────────────
@@ -471,13 +591,35 @@ def _run_irlens(hlo_file: Path, extra_args: list[str] | None = None) -> int:
     return result.returncode
 
 
+def _tracelens_output_dir(job_dir: Path, xplane_file: Path) -> Path:
+    """Derive a per-profile TraceLens output directory.
+
+    xplane files live under ``<run>/tensorboard/plugins/profile/<ts>/<host>.xplane.pb``.
+    We use the ``<ts>`` directory name to key each TraceLens output so that
+    periodic profiling (``profile_periodically_period``) produces separate
+    results per profiling window: ``tracelens/<ts>/csvs/*.csv``.
+    """
+    ts_dir = xplane_file.parent.name
+    return job_dir / "tracelens" / ts_dir
+
+
+def _tracelens_is_done(output_dir: Path) -> bool:
+    """Check if TraceLens output already exists for a given profile."""
+    csvs_dir = output_dir / "csvs"
+    return csvs_dir.is_dir() and any(csvs_dir.iterdir())
+
+
 def _run_tracelens(
     xplane_file: Path,
     output_dir: Path,
     buffer_assignment: Path | None = None,
 ) -> int:
-    """Run TraceLens_generate_perf_report_jax on the xplane file."""
-    # Check if TraceLens is installed
+    """Run TraceLens_generate_perf_report_jax on the xplane file.
+
+    Writes to a temporary directory first and renames on success so that
+    ``_tracelens_is_done`` never sees partial/corrupt output from a
+    failed run (e.g. incomplete xplane.pb still being written).
+    """
     if not shutil.which("TraceLens_generate_perf_report_jax"):
         _warn(
             "TraceLens not installed. Install with:\n"
@@ -485,10 +627,14 @@ def _run_tracelens(
         )
         return 1
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir = output_dir.with_name(output_dir.name + ".tmp")
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
     model_name = xplane_file.stem.replace(".xplane", "")
-    xlsx_path = output_dir / f"{model_name}_tracelens_report.xlsx"
-    csvs_dir = output_dir / "csvs"
+    xlsx_path = tmp_dir / f"{model_name}_tracelens_report.xlsx"
+    csvs_dir = tmp_dir / "csvs"
 
     cmd = [
         "TraceLens_generate_perf_report_jax",
@@ -498,11 +644,15 @@ def _run_tracelens(
     ]
     result = _run(cmd, "TraceLens")
     if result.returncode != 0:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
         _warn(
             "TraceLens failed. If this is a TF 2.19+/xprof environment,\n"
             "      see skills/performance-analysis/tracelens-patches.md"
         )
     else:
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        tmp_dir.rename(output_dir)
         _step(f"TraceLens output: {output_dir}")
     return result.returncode
 
@@ -539,6 +689,11 @@ def process_job(
     if not job_dir and not log_file:
         _err(f"Cannot resolve job directory or log file from: {path}")
         return 1
+
+    # ── Staleness check ──
+    if not force and job_dir and _analysis_is_current(job_dir, log_file):
+        _step(f"analysis.json is up-to-date (job finished, log unchanged) — skipping")
+        return 0
 
     # ── Parse log for structured data ──
     log_text: str | None = None
@@ -594,18 +749,44 @@ def process_job(
         _skip("IRLens", "no job directory found")
 
     # ── TraceLens ──
+    # xplane traces are written once per profiling window and never change.
+    # With profile_periodically_period, multiple profiles may exist at
+    # different training steps.  Each gets its own output directory keyed
+    # by the profile timestamp, and already-analyzed profiles are skipped.
     if skip_tracelens:
         _skip("TraceLens", "skipped (--skip-tracelens)")
     elif job_dir:
         xplane_files = _find_xplane_files(job_dir)
         if xplane_files:
-            tracelens_dir = job_dir / "tracelens"
+            # Group xplane files by profile timestamp directory.
+            # SPMD: all hosts run the same program, so we pick one host
+            # per timestamp.  We sort hosts within each group so the
+            # choice is deterministic (first alphabetically by filename).
+            by_ts: dict[str, list[Path]] = {}
+            for xf in xplane_files:
+                by_ts.setdefault(xf.parent.name, []).append(xf)
+            unique_xplanes = [sorted(hosts)[0] for hosts in by_ts.values()]
+
             buffer_assignment = _find_buffer_assignment(job_dir)
-            # Analyze rank 0 (sufficient for SPMD; all nodes run same program)
-            if _run_tracelens(xplane_files[0], tracelens_dir, buffer_assignment) != 0:
-                rc = 1
-            if len(xplane_files) > 1:
-                _step(f"Note: {len(xplane_files)} xplane files found (analyzed rank 0)")
+            analyzed = 0
+            skipped = 0
+            for xf in unique_xplanes:
+                out_dir = _tracelens_output_dir(job_dir, xf)
+                if _tracelens_is_done(out_dir):
+                    skipped += 1
+                    continue
+                if _run_tracelens(xf, out_dir, buffer_assignment) != 0:
+                    rc = 1
+                else:
+                    analyzed += 1
+
+            total = len(unique_xplanes)
+            if analyzed > 0:
+                _step(f"TraceLens: analyzed {analyzed} profile(s)")
+            if skipped > 0:
+                _skip("TraceLens", f"{skipped}/{total} profile(s) already analyzed")
+            if total > 1:
+                _step(f"{total} profiling windows found (periodic profiling)")
         else:
             _skip("TraceLens", "no *.xplane.pb files found")
     else:
@@ -698,7 +879,7 @@ examples:
     parser.add_argument(
         "-f", "--force",
         action="store_true",
-        help="forward -f to tgs_tagger (force rename on running jobs)",
+        help="bypass staleness check and forward -f to tgs_tagger (force rename on running jobs)",
     )
     parser.add_argument(
         "--skip-tgs",
