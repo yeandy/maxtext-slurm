@@ -115,7 +115,6 @@ input[type="checkbox"] { cursor: pointer; }
   <h1>MaxText Perf</h1>
   <nav>
     <a href="#/" class="nav-link" data-view="dashboard">Dashboard</a>
-    <a href="#/compare" class="nav-link" data-view="compare">Compare</a>
   </nav>
   <button class="theme-toggle" onclick="toggleTheme()">Theme</button>
 </div>
@@ -338,6 +337,9 @@ async function renderJobDetail(jobId) {
   const steady = tgs.steady;
   const tl = data.tracelens_summary || {};
   const artifacts = data.artifacts || {};
+  const hasHlo = !!(artifacts.hlo_file);
+  const hasXplane = !!(artifacts.xplane_files?.length || artifacts.profile_dir);
+  const hasTracelens = !!(artifacts.tracelens_dir);
 
   const js = data.job_status || {};
   let html = `
@@ -355,8 +357,8 @@ async function renderJobDetail(jobId) {
 
     <div class="tabs">
       <div class="tab active" data-tab="overview">Overview</div>
-      <div class="tab" data-tab="gpu">TraceLens</div>
-      <div class="tab" data-tab="hlo">IRLens</div>
+      <div class="tab" data-tab="gpu">TraceLens${hasTracelens ? '' : ' <span style="font-size:11px;color:var(--fg2)">(n/a)</span>'}</div>
+      <div class="tab" data-tab="hlo">IRLens${hasHlo ? '' : ' <span style="font-size:11px;color:var(--fg2)">(n/a)</span>'}</div>
       <div class="tab" data-tab="log">Log</div>
       <div class="tab" data-tab="files">Files</div>
     </div>
@@ -369,7 +371,7 @@ async function renderJobDetail(jobId) {
       </div>
     </div>
     <div class="tab-content" id="tc-log"><div class="loading"><div class="spinner"></div></div></div>
-    <div class="tab-content" id="tc-hlo">
+    <div class="tab-content" id="tc-hlo">${hasHlo ? `
       <div class="toolbar">
         <select id="hlo-op"><option value="all">All ops</option><option value="communication" selected>Communication</option><option value="computation">Computation</option></select>
         <label><input type="checkbox" id="hlo-name"> Names</label>
@@ -379,8 +381,8 @@ async function renderJobDetail(jobId) {
         <input type="text" id="hlo-search" placeholder="Search IRLens output..." oninput="filterHLO()">
       </div>
       <div class="code-viewer" id="hlo-output" style="min-height:200px">Click "Run IRLens" to analyze the HLO IR.</div>
-    </div>
-    <div class="tab-content" id="tc-gpu"><div class="loading"><div class="spinner"></div></div></div>
+    ` : `<p style="color:var(--fg2);padding:20px">No HLO data available. Pass <code style="background:var(--bg3);padding:2px 6px;border-radius:4px">_env_ENABLE_XLA_DUMP=1</code> to capture HLO IR.</p>`}</div>
+    <div class="tab-content" id="tc-gpu">${hasTracelens ? '<div class="loading"><div class="spinner"></div></div>' : hasXplane ? '<p style="color:var(--fg2);padding:20px">Xplane traces found but TraceLens has not been run yet. Run <code style="background:var(--bg3);padding:2px 6px;border-radius:4px">analyze_job.py</code> to generate reports.</p>' : '<p style="color:var(--fg2);padding:20px">No trace data available. Pass <code style="background:var(--bg3);padding:2px 6px;border-radius:4px">profiler=xplane</code> to capture runtime traces.</p>'}</div>
     <div class="tab-content" id="tc-files"><div class="loading"><div class="spinner"></div></div></div>`;
 
   app.innerHTML = html;
@@ -393,7 +395,7 @@ async function renderJobDetail(jobId) {
       tab.classList.add('active');
       document.getElementById('tc-' + tab.dataset.tab).classList.add('active');
       if (tab.dataset.tab === 'log') loadLog(jobId);
-      if (tab.dataset.tab === 'gpu') loadGPU(jobId);
+      if (tab.dataset.tab === 'gpu' && hasTracelens) loadGPU(jobId);
       if (tab.dataset.tab === 'files') loadFiles(jobId);
     };
   });
@@ -407,8 +409,8 @@ async function loadOverviewCharts(jobId) {
     const d = await api(`/api/jobs/${jobId}/tgs-steps`);
     const c = chartColors();
     const stepBegin = d.step_begin ?? 0;
-    const labels = d.tgs_per_step.map((_, i) => i + stepBegin);
-    const xScale = { title: { display: true, text: 'Training Step', color: c.fg2 }, ticks: { color: c.fg2 }, grid: { color: c.border } };
+    const toXY = (arr) => arr.map((v, i) => ({x: i + stepBegin, y: v}));
+    const xScale = { type: 'linear', title: { display: true, text: 'Training Step', color: c.fg2 }, ticks: { color: c.fg2, precision: 0 }, grid: { color: c.border } };
     const noPt = d.tgs_per_step.length > 50 ? 0 : 3;
 
     // TGS chart
@@ -417,10 +419,9 @@ async function loadOverviewCharts(jobId) {
       chartInstances.tgs = new Chart(tgsCtx, {
         type: 'line',
         data: {
-          labels,
           datasets: [{
             label: 'TGS (Tokens/GPU/s)',
-            data: d.tgs_per_step,
+            data: toXY(d.tgs_per_step),
             borderColor: c.accent,
             backgroundColor: c.accent + '20',
             fill: true,
@@ -448,7 +449,7 @@ async function loadOverviewCharts(jobId) {
       if (mfuCtx) {
         chartInstances.mfu = new Chart(mfuCtx, {
           type: 'line',
-          data: { labels, datasets: [{ label: 'MFU %', data: d.mfu_per_step, borderColor: c.green, pointRadius: noPt, tension: 0.1 }] },
+          data: { datasets: [{ label: 'MFU %', data: toXY(d.mfu_per_step), borderColor: c.green, pointRadius: noPt, tension: 0.1 }] },
           options: { responsive: true, plugins: { title: { display: true, text: 'MFU per Step', color: c.fg }, legend: { labels: { color: c.fg2 } } }, scales: { x: xScale, y: { title: { display: true, text: 'MFU %', color: c.fg2 }, ticks: { color: c.fg2 }, grid: { color: c.border } } } }
         });
       }
@@ -460,7 +461,7 @@ async function loadOverviewCharts(jobId) {
       if (lossCtx) {
         chartInstances.loss = new Chart(lossCtx, {
           type: 'line',
-          data: { labels, datasets: [{ label: 'Loss', data: d.loss_per_step, borderColor: c.red, pointRadius: noPt, tension: 0.1 }] },
+          data: { datasets: [{ label: 'Loss', data: toXY(d.loss_per_step), borderColor: c.red, pointRadius: noPt, tension: 0.1 }] },
           options: { responsive: true, plugins: { title: { display: true, text: 'Loss per Step', color: c.fg }, legend: { labels: { color: c.fg2 } } }, scales: { x: xScale, y: { title: { display: true, text: 'Loss', color: c.fg2 }, ticks: { color: c.fg2 }, grid: { color: c.border } } } }
         });
       }
@@ -625,7 +626,9 @@ function buildFileTree(files) {
   }
   return root;
 }
-function renderTree(node, jobId) {
+function renderTree(node, jobId, prefix, depth) {
+  prefix = prefix || '';
+  depth = depth || 0;
   let html = '<ul class="file-tree">';
   const entries = Object.keys(node).sort((a, b) => {
     const aIsDir = typeof node[a] === 'object' && !node[a].path;
@@ -650,7 +653,10 @@ function renderTree(node, jobId) {
       }
     } else {
       const count = countFiles(val);
-      html += `<li class="dir-item" onclick="event.stopPropagation();this.classList.toggle('open')"><span class="dir-toggle">▶</span> <strong>${name}/</strong> <span class="file-size">(${count} files)</span><div class="dir-children">${renderTree(val, jobId)}</div></li>`;
+      const dirPath = prefix ? prefix + '/' + name : name;
+      const dirSize = sumSize(val);
+      const dlBtn = depth === 0 ? ` <a href="/api/jobs/${jobId}/download?subdir=${encodeURIComponent(dirPath)}" download class="badge badge-gray" onclick="event.stopPropagation()">download zip</a>` : '';
+      html += `<li class="dir-item" onclick="event.stopPropagation();this.classList.toggle('open')"><span class="dir-toggle">▶</span> <strong>${name}/</strong> <span class="file-size">(${count} files, ${fmtSize(dirSize)})${dlBtn}</span><div class="dir-children">${renderTree(val, jobId, dirPath, depth + 1)}</div></li>`;
     }
   }
   html += '</ul>';
@@ -663,6 +669,14 @@ function countFiles(node) {
     n += (v && v.path) ? 1 : countFiles(v);
   }
   return n;
+}
+function sumSize(node) {
+  let s = 0;
+  for (const k of Object.keys(node)) {
+    const v = node[k];
+    s += (v && v.path) ? (v.size || 0) : sumSize(v);
+  }
+  return s;
 }
 async function previewFile(jobId, path, li) {
   const div = li.querySelector('.file-preview');
@@ -684,8 +698,10 @@ async function loadFiles(jobId) {
   try {
     const d = await api(`/api/jobs/${jobId}/files`);
     const tree = buildFileTree(d.files);
-    let html = `<div class="toolbar"><a class="btn btn-primary" href="/api/jobs/${jobId}/download">Download All (ZIP)</a><span style="color:var(--fg2);font-size:13px;margin-left:12px">${d.files.length} files</span></div>`;
+    const totalSize = d.files.reduce((sum, f) => sum + (f.size || 0), 0);
+    let html = `<div class="toolbar"><span style="color:var(--fg2);font-size:13px">${d.files.length} files &middot; ${fmtSize(totalSize)} total</span></div>`;
     html += renderTree(tree, jobId);
+    html += `<div class="toolbar" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)"><a class="btn btn-primary" href="/api/jobs/${jobId}/download">Download All (ZIP)</a><span style="color:var(--fg2);font-size:13px;margin-left:12px">${fmtSize(totalSize)} uncompressed</span></div>`;
     el.innerHTML = html;
     filesLoaded[jobId] = true;
   } catch(e) { el.innerHTML = `<p style="color:var(--red)">${e.message}</p>`; }
@@ -704,18 +720,8 @@ async function renderCompare() {
     return;
   }
 
-  // If still not enough, load all jobs and auto-select them all
   if (jobIds.length < 2) {
-    app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
-    try {
-      if (!allJobs.length) allJobs = await api('/api/jobs');
-      if (allJobs.length >= 2) {
-        jobIds = allJobs.map(j => j.job_id);
-        location.hash = '#/compare?jobs=' + jobIds.join(',');
-        return;
-      }
-    } catch(e) { /* fall through */ }
-    app.innerHTML = '<p style="padding:40px;color:var(--fg2)">Need at least 2 analyzed jobs to compare. <a href="#/">Back to Dashboard</a></p>';
+    app.innerHTML = '<p style="padding:40px;color:var(--fg2)">Select at least 2 jobs from the <a href="#/">Dashboard</a>, then click <strong>Compare Selected</strong>.</p>';
     return;
   }
 
@@ -794,22 +800,21 @@ async function renderCompare() {
     const lineCtx = document.getElementById('chart-cmp-tgs-line');
     if (lineCtx) {
       const colors = [c.accent, c.green, c.yellow, c.red, c.purple];
-      const maxSteps = Math.max(...valid.map(j => (j.tgs_per_step||[]).length));
-      const minBegin = Math.min(...valid.map(j => j.step_begin ?? 0));
-      const labels = Array.from({length: maxSteps}, (_, i) => i + minBegin);
       new Chart(lineCtx, {
         type: 'line',
         data: {
-          labels,
-          datasets: valid.map((j, i) => ({
-            label: `${j.job_id} (${j.model || '?'})`,
-            data: j.tgs_per_step || [],
-            borderColor: colors[i % colors.length],
-            pointRadius: 0,
-            tension: 0.1,
-          }))
+          datasets: valid.map((j, i) => {
+            const begin = j.step_begin ?? 0;
+            return {
+              label: `${j.job_id} (${j.model || '?'})`,
+              data: (j.tgs_per_step || []).map((v, k) => ({x: k + begin, y: v})),
+              borderColor: colors[i % colors.length],
+              pointRadius: 0,
+              tension: 0.1,
+            };
+          })
         },
-        options: { responsive: true, plugins: { title: { display: true, text: 'TGS per Step (Overlay)', color: c.fg }, legend: { labels: { color: c.fg2 } } }, scales: { x: { title: { display: true, text: 'Training Step', color: c.fg2 }, ticks: { color: c.fg2 }, grid: { color: c.border } }, y: { title: { display: true, text: 'Tokens/GPU/s', color: c.fg2 }, ticks: { color: c.fg2 }, grid: { color: c.border } } } }
+        options: { responsive: true, plugins: { title: { display: true, text: 'TGS per Step (Overlay)', color: c.fg }, legend: { labels: { color: c.fg2 } } }, scales: { x: { type: 'linear', title: { display: true, text: 'Training Step', color: c.fg2 }, ticks: { color: c.fg2, precision: 0 }, grid: { color: c.border } }, y: { title: { display: true, text: 'Tokens/GPU/s', color: c.fg2 }, ticks: { color: c.fg2 }, grid: { color: c.border } } } }
       });
     }
   } catch(e) { app.innerHTML = `<p style="color:var(--red)">${e.message}</p>`; }

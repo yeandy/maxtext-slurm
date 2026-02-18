@@ -111,14 +111,18 @@ echo "LOG_FILE=$LOG_FILE"
 # Symlink to the job log inside the job directory for easy access
 ln -snf "../$JOB_DIR.log" "$JOB_WORKSPACE/$JOB_DIR/log"
 
-# Write log header in KEY=VALUE format (matches _job.sbatch;
-# tgs_tagger.py reads NNODES= from the header)
+# Write log header in KEY=VALUE format.
+# Field order mirrors _job.sbatch (Slurm path) for consistent parsing.
 {
     echo "JOB_ID=$JOB_ID"
     echo "JOB_NAME=$JOB_NAME"
     echo "NNODES=$NNODES"
     echo "NODE_RANK=$NODE_RANK"
     echo "HOSTNAME=$(hostname)"
+    echo "PASSTHROUGH_ARGS=\"${PASSTHROUGH_ARGS[*]}\""
+    echo "MODEL_NAME=$MODEL_NAME"
+    [[ -n "$MODEL_NAME_ALIAS" ]] && echo "MODEL_NAME_ALIAS=$MODEL_NAME_ALIAS"
+    [[ -n "$EXP_TAG" ]] && echo "EXP_TAG=$EXP_TAG"
 } | tee "$LOG_FILE"
 
 # Hold an append-mode fd to the log file. Unlike >> "$LOG_FILE" (which opens

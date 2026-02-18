@@ -15,20 +15,20 @@ from __future__ import annotations
 
 import argparse
 import csv
-import io
 import json
 import re
 import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query
+from starlette.background import BackgroundTask
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
-    StreamingResponse,
 )
 
 # ── Setup ────────────────────────────────────────────────────────────────────
@@ -344,15 +344,71 @@ def _parse_kernel_category_csv(path: Path) -> list[dict] | None:
         return None
 
 
+def _slurm_nodelist_first(nodelist: str) -> str:
+    """Return the first hostname from a Slurm NODELIST string.
+
+    Handles bracket notation (``chi[2815-2817,2820]`` → ``chi2815``),
+    comma-separated (``node01,node02`` → ``node01``), and plain strings.
+    """
+    bracket = nodelist.find("[")
+    if bracket != -1:
+        prefix = nodelist[:bracket]
+        close = nodelist.find("]", bracket)
+        inner = nodelist[bracket + 1 : close] if close != -1 else nodelist[bracket + 1 :]
+        first_num = inner.split(",")[0].split("-")[0]
+        return prefix + first_num
+    return nodelist.split(",")[0]
+
+
+def _node0_hostname(job_dir: Path) -> str | None:
+    """Extract node 0's hostname from the job log's SLURM_JOB_NODELIST."""
+    log_file = _find_log_file(job_dir)
+    if not log_file:
+        return None
+    try:
+        header = log_file.read_text(errors="replace")[:2000]
+    except OSError:
+        return None
+    m = re.search(r"^SLURM_JOB_NODELIST\s*=\s*(.+)", header, re.MULTILINE)
+    if not m:
+        return None
+    return _slurm_nodelist_first(m.group(1).strip())
+
+
 def _find_tracelens_profiles(job_dir: Path) -> list[str]:
-    """List available TraceLens profile timestamps (sorted, latest last)."""
+    """List available TraceLens profile timestamps (sorted, latest last).
+
+    Only returns timestamps whose profile directory contains node 0's
+    xplane file (the coordinator is the representative host in SPMD).
+    Falls back to all timestamps if node 0 can't be determined.
+    """
     tl_dir = job_dir / "tracelens"
     if not tl_dir.is_dir():
         return []
-    return sorted(
+    all_ts = sorted(
         d.name for d in tl_dir.iterdir()
         if d.is_dir() and (d / "csvs").is_dir()
     )
+    if not all_ts:
+        return []
+
+    node0 = _node0_hostname(job_dir)
+    if not node0:
+        return all_ts
+
+    # Find profile root that contains xplane files
+    profile_roots = sorted(job_dir.rglob("plugins/profile"))
+    if not profile_roots:
+        return all_ts
+
+    node0_ts = set()
+    for pr in profile_roots:
+        for ts_dir in pr.iterdir():
+            if ts_dir.is_dir() and any(ts_dir.glob(f"{node0}.*xplane.pb")):
+                node0_ts.add(ts_dir.name)
+
+    filtered = [ts for ts in all_ts if ts in node0_ts]
+    return filtered if filtered else all_ts
 
 
 def _resolve_tracelens_csvs(job_dir: Path, profile: str | None) -> Path | None:
@@ -520,25 +576,38 @@ async def serve_job_file(job_id: str, file_path: str):
 
 
 @app.get("/api/jobs/{job_id}/download")
-async def download_job(job_id: str):
-    """Stream a zip archive of the job directory."""
+async def download_job(job_id: str, subdir: str = Query("", description="Optional subdirectory to download")):
+    """Return a zip archive of the job directory (or a subdirectory)."""
     job_dir = _find_job_dir(job_id)
 
-    def generate_zip():
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for f in job_dir.rglob("*"):
+    if subdir:
+        subdir_path = Path(subdir)
+        if subdir_path.is_absolute() or ".." in subdir_path.parts:
+            raise HTTPException(403, "Path traversal not allowed")
+        target = job_dir / subdir
+        if not target.is_dir():
+            raise HTTPException(404, f"Directory not found: {subdir}")
+    else:
+        target = job_dir
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in target.rglob("*"):
                 if f.is_file():
                     arcname = f"{job_dir.name}/{f.relative_to(job_dir)}"
                     zf.write(f, arcname)
-        buf.seek(0)
-        yield buf.read()
+        tmp.close()
+    except Exception:
+        Path(tmp.name).unlink(missing_ok=True)
+        raise
 
-    filename = f"{job_dir.name}.zip"
-    return StreamingResponse(
-        generate_zip(),
+    name = f"{job_dir.name}-{subdir.replace('/', '-')}" if subdir else job_dir.name
+    return FileResponse(
+        tmp.name,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        filename=f"{name}.zip",
+        background=BackgroundTask(lambda: Path(tmp.name).unlink(missing_ok=True)),
     )
 
 
