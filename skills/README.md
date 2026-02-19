@@ -7,6 +7,7 @@ Structured instructions for AI coding assistants. Each skill is a self-contained
 | Skill | Trigger |
 |-------|---------|
 | [performance-analysis](performance-analysis/SKILL.md) | "analyze job", "TGS", "TraceLens", "IRLens", profiling tasks |
+| [job-log-triage](job-log-triage/SKILL.md) | "triage", "diagnose", "why did job fail", "is the job hanging", crash/hang/timeout/OOM/NCCL errors, job status |
 
 ## How agents discover skills
 
