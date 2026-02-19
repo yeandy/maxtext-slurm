@@ -225,6 +225,10 @@ server.serve_forever()
 " "$METRICS_FILE" "$EXPORTER_PORT" &
     HTTP_PID=$!
     echo "[metrics_exporter] HTTP server PID=$HTTP_PID on port $EXPORTER_PORT"
+
+    # Kill the HTTP server when the parent bash process exits, so it
+    # doesn't get orphaned (reparented to PID 1) and hold the port.
+    trap "kill $HTTP_PID 2>/dev/null; wait $HTTP_PID 2>/dev/null" EXIT INT TERM
 }
 
 # ---------------------------------------------------------------------------
