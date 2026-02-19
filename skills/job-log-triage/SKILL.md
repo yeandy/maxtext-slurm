@@ -139,7 +139,7 @@ When a job is still RUNNING in Slurm but training has stalled:
    - Core files match: `core.*`
    - No core files + RCCL hang signature = pure deadlock, no crash involved.
 6. **Recommended action:** Kill the job (`scancel <id>`), then resubmit with `_env_NCCL_DEBUG=INFO` for detailed NCCL-level diagnostics if the hang recurs. Use `slurm_job_monitor.sh -j <id>` for early hang detection via Telegram alerts.
-7. **Note on heartbeat timeout:** The heartbeat mechanism (`jax_distributed_heartbeat_timeout_seconds`) is supposed to detect hangs, but it is unreliable due to the known gRPC bug — it may or may not fire during a real hang. Do not rely on it for hang detection; use `slurm_job_monitor.sh` instead.
+7. **Heartbeats do NOT detect hangs.** The heartbeat mechanism (`jax_distributed_heartbeat_timeout_seconds`) is a **liveness check**, not a progress check — it only detects dead/crashed processes. During an RCCL hang, all processes are alive and actively spinning in a busy-wait loop, so they continue sending heartbeats successfully. The heartbeat will never fire during a hang because from its perspective every process is healthy. Only training step progress monitoring (`slurm_job_monitor.sh`) can detect hangs. Do not recommend changing `jax_distributed_heartbeat_timeout_seconds` as a response to a hang — it is irrelevant.
 
 ## Heartbeat timeout diagnosis
 
