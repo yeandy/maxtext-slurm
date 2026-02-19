@@ -173,6 +173,7 @@ start_ray_cluster() {
     ray stop --force &>/dev/null || true
     pkill -f "prometheus" &>/dev/null || true
     pkill -f "metrics_exporter.sh" &>/dev/null || true
+    pkill -f "node_hw_metrics.prom" &>/dev/null || true
     # Wait for ports to be released after SIGKILL
     sleep 2
 
@@ -191,6 +192,7 @@ stop_ray_cluster() {
     ray stop --force &>/dev/null || true
     pkill -f "prometheus" &>/dev/null || true
     pkill -f "metrics_exporter.sh" &>/dev/null || true
+    pkill -f "node_hw_metrics.prom" &>/dev/null || true
     pkill -f "tensorboard" &>/dev/null || true
 }
 
