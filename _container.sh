@@ -269,6 +269,8 @@ fi
 # cancelled (scancel).  Without this, cancelling kills srun/bash but the
 # Docker container (managed by dockerd) keeps running until the next job.
 CONTAINER_NAME="maxtext-slurm-${JOB_ID}-node${NODE_RANK}"
+# Interactive runs all share JOB_ID=unknown; append PID to avoid collisions.
+[[ "$JOB_ID" == "unknown" ]] && CONTAINER_NAME+="-$$"
 # Remove any leftover container with the same name (e.g., from a prior SIGKILL).
 "${DOCKER_CMD[@]}" rm -f "$CONTAINER_NAME" 2>/dev/null || true
 
