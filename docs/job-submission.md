@@ -69,6 +69,7 @@ Run a single-node training job locally without Slurm scheduling:
 ```bash
 run_local.sh 70b -- steps=10
 run_local.sh 70b:my-experiment -- per_device_batch_size=2
+RAY=1 run_local.sh 70b -- steps=10                        # with observability
 ```
 
 Or drop into an interactive shell inside the container (no GPU gate):

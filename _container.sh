@@ -8,6 +8,13 @@ DOCKER_SCRIPT_DIR="/$(basename "$SCRIPT_DIR")"
 # ==== Container config (edit container_env.sh to switch images/paths) ====
 source "$SCRIPT_DIR/container_env.sh"
 
+# Map user-facing RAY flag to internal USE_RAY.
+# For script mode, run_setup.sh already did this; for interactive mode
+# (run_local.sh with no args), run_setup.sh is skipped so we do it here.
+if [[ "${RAY:-0}" == "1" || "${RAY:-}" == "true" ]]; then
+    USE_RAY=true
+fi
+
 if [[ "$DOCKER_IMAGE_HAS_AINIC" == "true" ]]; then
     echo "AINIC-enabled image detected: $DOCKER_IMAGE"
 else
@@ -367,6 +374,33 @@ _cleanup_container() {
 }
 trap _cleanup_container EXIT
 
+# ---- Env vars passed to the container ----
+# Training-specific vars are only needed in script mode.  In interactive mode,
+# in_container_run.sh → run_setup.sh computes them from scratch.  Passing
+# sentinel values (JAX_COORDINATOR_PORT=0, JOB_ID=unknown) would just force
+# run_setup.sh to detect and unset them.
+TRAIN_ENV_ARGS=()
+if [[ "$MODE" == "script" ]]; then
+    TRAIN_ENV_ARGS=(
+        --env "JAX_COORDINATOR_IP=$JAX_COORDINATOR_IP"
+        --env "JAX_COORDINATOR_PORT=$JAX_COORDINATOR_PORT"
+        --env "JOB_DIR=$JOB_DIR"
+        --env "MODEL_NAME_ALIAS=${MODEL_NAME_ALIAS}"
+        --env "LOGIN_NODE_HOSTNAME=$LOGIN_NODE_HOSTNAME"
+        --env "LOGIN_NODE_IP=$LOGIN_NODE_IP"
+        --env "NODELIST_EXPANDED=$NODELIST_EXPANDED"
+    )
+fi
+
+# Only pass Ray env vars when Ray is enabled.
+# Pass RAY (user-level flag), not USE_RAY (internal) — so RAY=0 at command
+# level inside the container can always override.
+RAY_ENV_ARGS=()
+if [[ "${USE_RAY:-false}" == "true" ]]; then
+    RAY_ENV_ARGS=(--env "RAY=1")
+    [[ -n "${RAY_PORT:-}" ]] && RAY_ENV_ARGS+=(--env "RAY_PORT=$RAY_PORT")
+fi
+
 DOCKER_RUN_ARGS=(
     --rm
     --name "$CONTAINER_NAME"
@@ -378,18 +412,12 @@ DOCKER_RUN_ARGS=(
     --privileged
     "${GPU_DEVICE_ARGS[@]}"
     "${IB_DEVICE_OPTIONS[@]}"
-    --env "JAX_COORDINATOR_IP=$JAX_COORDINATOR_IP"
-    --env "JAX_COORDINATOR_PORT=$JAX_COORDINATOR_PORT"
-    --env "RAY_PORT=${RAY_PORT:-6379}"
-    --env "JOB_DIR=$JOB_DIR"
-    --env "MODEL_NAME_ALIAS=${MODEL_NAME_ALIAS}"
+    "${TRAIN_ENV_ARGS[@]}"
+    "${RAY_ENV_ARGS[@]}"
     "${NCCL_ENV_ARGS[@]}"
     --env "NNODES=$NNODES"
     --env "NODE_RANK=$NODE_RANK"
-    --env "LOGIN_NODE_HOSTNAME=$LOGIN_NODE_HOSTNAME"
-    --env "LOGIN_NODE_IP=$LOGIN_NODE_IP"
     --env "JOB_ID=$JOB_ID"
-    --env "NODELIST_EXPANDED=$NODELIST_EXPANDED"
     "${GROUP_ADD_ARGS[@]}"
     "${IB_MOUNT_OPTIONS[@]}"
     "${DATASET_MOUNT_OPTIONS[@]}"

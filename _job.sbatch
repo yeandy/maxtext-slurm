@@ -44,8 +44,8 @@ EXP_TAG=${SCRIPT_ARGS[1]:-}
 MODEL_NAME_ALIAS=${SCRIPT_ARGS[2]:-}
 
 echo "MODEL_NAME=$MODEL_NAME"
-[[ -n "$MODEL_NAME_ALIAS" ]] && echo "MODEL_NAME_ALIAS=$MODEL_NAME_ALIAS"
-echo "EXP_TAG=$EXP_TAG"
+if [[ -n "$MODEL_NAME_ALIAS" ]]; then echo "MODEL_NAME_ALIAS=$MODEL_NAME_ALIAS"; fi
+if [[ -n "$EXP_TAG" ]]; then echo "EXP_TAG=$EXP_TAG"; fi
 
 # Stage timeouts — see utils/stage_timeout.sh for details.
 # Override: STAGE_TIMEOUTS="preflight:600,pull:1800" ./submit.sh ...
