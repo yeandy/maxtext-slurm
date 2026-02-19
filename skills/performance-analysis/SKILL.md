@@ -51,7 +51,9 @@ python3 utils/analyze_job.py -f /outputs/<job>.log
 
 The `.log` file sits alongside the directory in `/outputs/`.
 
-When `enable_checkpointing=true`, `OUTPUT_PATH` points to a shared model-based directory instead of the per-job directory. Profiler traces (`*.xplane.pb`) and TensorBoard events may end up outside the job directory. `analyze_job.py` parses `Config param tensorboard_dir` from the log to locate these external artifacts. The resolved paths are stored in `analysis.json` under `artifacts.tensorboard_dir` and `artifacts.profile_dir` (when external). The dashboard serves external profile files transparently.
+When `enable_checkpointing=true`, `OUTPUT_PATH` points to a shared model-based directory instead of the per-job directory. Profiler traces (`*.xplane.pb`) and TensorBoard events may end up outside the job directory. `analyze_job.py` parses `Config param tensorboard_dir` from the log to locate these external artifacts. The resolved paths are stored in `analysis.json` under `artifacts.tensorboard_dir` and `artifacts.profile_dir` (when external).
+
+**Shared directory disambiguation:** When multiple jobs write profiles to the same shared directory, both `analyze_job.py` and `perf_server.py` filter profile timestamps using two criteria: (1) **time window** — the profile timestamp must fall within the job's execution window (artifact dir ctime → log mtime), and (2) **node-0 hostname** — the directory must contain an xplane file from the job's node 0. Sibling timestamp directories within 60 seconds of an anchor are included (nodes in a profiling session start seconds apart). This correctly handles node reuse across jobs and periodic profiling (`profile_periodically_period > 0`).
 
 ## Individual tools
 
@@ -82,7 +84,7 @@ TraceLens_generate_perf_report_jax \
 
 Find xplane files: `<job_dir>/**/tensorboard/plugins/profile/**/*.xplane.pb`
 
-`analyze_job.py` selects **node 0's xplane** for analysis (parsed from `SLURM_JOB_NODELIST` in the log). In SPMD training all hosts execute the same program, so node 0 is representative. Distributed profiling may scatter host traces across multiple timestamp directories — filtering by node 0 naturally deduplicates to one trace per profiling step.
+`analyze_job.py` selects **node 0's xplane** for analysis (parsed from `SLURM_JOB_NODELIST` or `JOB_NODELIST` in the log). In SPMD training all hosts execute the same program, so node 0 is representative. Distributed profiling may scatter host traces across multiple timestamp directories — filtering by node 0 naturally deduplicates to one trace per profiling step. When profiles live in a shared directory (`enable_checkpointing=true`), the job's execution time window is also applied to avoid picking up profiles from other jobs (see "Shared directory disambiguation" above).
 
 If TraceLens fails with protobuf/xprof errors (TF 2.19+), see [tracelens-patches.md](tracelens-patches.md) for required patches.
 
@@ -168,4 +170,4 @@ Large per-GPU variance in compute % indicates load imbalance. High exposed comm 
 
 `analyze_job.py` also prints a dashboard hint at the end of its output — if the server is running it shows the URL, otherwise it shows the start command.
 
-Features: job listing with sortable metrics, per-step TGS/MFU/loss charts, HLO viewer with comm/compute filters, GPU utilization pie and per-GPU bar charts, file browser with Perfetto links for xplane traces, per-directory and full-job zip download, and side-by-side job comparison.
+Features: job listing with sortable metrics, per-step TGS/MFU/loss charts, HLO viewer with comm/compute filters, GPU utilization pie and per-GPU bar charts, file browser with Perfetto links for xplane traces, per-directory and full-job zip download, and side-by-side job comparison. The file browser filters external profile files to only show those belonging to the viewed job (using the same time-window + node-0 disambiguation as `analyze_job.py`).

@@ -92,7 +92,9 @@ TraceLens_generate_perf_report_jax \
 
 When periodic profiling is enabled (`profile_periodically_period > 0`), each profiling window produces a separate xplane trace under its own timestamp directory. `analyze_job.py` handles this automatically — giving each profile its own TraceLens output directory and skipping profiles that have already been analyzed.
 
-In multi-node jobs, `analyze_job.py` selects **node 0's xplane** (the coordinator, identified from `SLURM_JOB_NODELIST` in the log) for analysis. Since SPMD training runs the same program on every host, node 0 is representative. Distributed profiling may write host traces across multiple timestamp directories a few seconds apart — filtering by node 0 naturally deduplicates to one trace per profiling step.
+In multi-node jobs, `analyze_job.py` selects **node 0's xplane** (the coordinator, identified from `SLURM_JOB_NODELIST` or `JOB_NODELIST` in the log) for analysis. Since SPMD training runs the same program on every host, node 0 is representative. Distributed profiling may write host traces across multiple timestamp directories a few seconds apart — filtering by node 0 naturally deduplicates to one trace per profiling step.
+
+When profiles live in a shared directory (`enable_checkpointing=true`), multiple jobs may contribute timestamps to the same location. To disambiguate, both `analyze_job.py` and `perf_server.py` apply a **time-window filter** — profile timestamps must fall within the job's execution window (artifact directory creation time → log file modification time) — in addition to node-0 filtering. Sibling timestamp directories within 60 seconds of a matched anchor are included as part of the same profiling session (nodes start profiling seconds apart). This correctly handles node reuse across jobs and periodic profiling (`profile_periodically_period > 0`).
 
 Key output columns in `csvs/gpu_events_averages.csv`:
 
@@ -181,7 +183,7 @@ utils/analyze_job.py -f outputs/<job>.log       # force re-analysis
 
 This runs whichever of the following are applicable:
   - **Tag TGS** — `tgs_tagger.py` extracts steady-state throughput (steps 5-14) and renames outputs. For running jobs, TGS is computed but renames are deferred until the job finishes.
-  - **Analyze traces** — TraceLens for GPU utilization breakdown (compute vs communication vs idle). Only node 0's trace is analyzed (representative in SPMD); each profiling window gets its own output directory; already-analyzed profiles are skipped on re-runs. When checkpointing redirects profiler output to a shared directory, `analyze_job.py` parses `tensorboard_dir` from the log to locate the traces.
+  - **Analyze traces** — TraceLens for GPU utilization breakdown (compute vs communication vs idle). Only node 0's trace is analyzed (representative in SPMD); each profiling window gets its own output directory; already-analyzed profiles are skipped on re-runs. When checkpointing redirects profiler output to a shared directory, `analyze_job.py` parses `tensorboard_dir` from the log to locate the traces and applies time-window + node-0 filtering to disambiguate profiles from different jobs.
   - **Analyze HLO** — IRLens to inspect the compiled computation graph (collective patterns, fusion structure).
 
 The dispatcher is safe to re-run. It records `job_status` (completed / failed / cancelled / running / unknown) in `analysis.json` and uses it for staleness detection: finished jobs with up-to-date analysis are skipped automatically, while running or stale jobs are re-analyzed. Pass `-f` to force re-analysis regardless (staleness check only; does not force renames).
@@ -194,6 +196,6 @@ utils/perf_server.py --host 0.0.0.0              # remote access (auto port)
 utils/perf_server.py --host 0.0.0.0 --port 8080  # explicit port
 ```
 
-Requires `pip install fastapi uvicorn`. The dashboard reads `analysis.json` files written by `analyze_job.py`. When periodic profiling produced multiple TraceLens profiles, the dashboard shows only node 0's profiles (matching `analyze_job.py`'s selection) and offers a profile selector.
+Requires `pip install fastapi uvicorn`. The dashboard reads `analysis.json` files written by `analyze_job.py`. When periodic profiling produced multiple TraceLens profiles, the dashboard shows only node 0's profiles (matching `analyze_job.py`'s selection) and offers a profile selector. The file browser filters external profile files to only show those belonging to the viewed job (using the same time-window + node-0 disambiguation).
 
 4. **Tune** — adjust XLA flags and environment variables in `train_env.sh` based on findings.
