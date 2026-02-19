@@ -20,7 +20,7 @@ export RAY_num_heartbeats_timeout=${RAY_num_heartbeats_timeout:-20}             
 # _container.sh --env).  No default — prevents silent fallback to a
 # potentially occupied port.
 RAY_HEAD_IP="${JAX_COORDINATOR_IP:-localhost}"
-RAY_METRICS_PORT=8080
+RAY_METRICS_PORT=18080
 PROMETHEUS_PORT=9090
 
 # Persist Ray logs to the shared job output directory so they survive crashes.

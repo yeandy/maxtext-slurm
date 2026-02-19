@@ -155,19 +155,16 @@ Large per-GPU variance in compute % indicates load imbalance. High exposed comm 
    ss -tlnp | grep perf_server
    ```
 2. If **already running**, just reuse it — note the port from the output and skip to step 4.
-3. If **not running**, find a free port and start:
+3. If **not running**, start it:
    ```bash
    pip install fastapi uvicorn   # one-time
 
-   # Try port 8080 first; if occupied by another process (e.g. Ray Dashboard),
-   # use the next available port (8081, 8082, ...).
-   PORT=8080
-   while ss -tlnp | grep -q ":${PORT} "; do PORT=$((PORT + 1)); done
-   utils/perf_server.py --host 0.0.0.0 --port $PORT &
+   # perf_server.py auto-detects a free port starting from 8080.
+   utils/perf_server.py --host 0.0.0.0 &
    ```
 4. **Always** tell the user the dashboard URL: `http://<host>:<PORT>`
 
-**Port conflict handling:** Port 8080 is commonly used by Ray Dashboard or other services. Do not assume 8080 is available — always check with `ss -tlnp` first. If occupied by a non-perf-dashboard process, increment the port rather than killing the existing process. The perf server auto-reloads `analysis.json` on each request, so a running server picks up new analysis results without restart.
+**Port conflict handling:** `perf_server.py` auto-detects a free port starting from 8080 (skipping any port already in use). If you need a specific port, pass `--port <N>`. The perf server auto-reloads `analysis.json` on each request, so a running server picks up new analysis results without restart. `analyze_job.py` scans ports 8080-8099 to find the running dashboard automatically.
 
 `analyze_job.py` also prints a dashboard hint at the end of its output — if the server is running it shows the URL, otherwise it shows the start command.
 

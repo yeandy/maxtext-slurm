@@ -189,8 +189,9 @@ The dispatcher is safe to re-run. It records `job_status` (completed / failed / 
 3. **Browse results** — start the dashboard to visualize, compare, and download analysis results:
 
 ```bash
-utils/perf_server.py                             # http://localhost:8080
-utils/perf_server.py --host 0.0.0.0 --port 8080  # remote access
+utils/perf_server.py                             # auto-picks port from 8080
+utils/perf_server.py --host 0.0.0.0              # remote access (auto port)
+utils/perf_server.py --host 0.0.0.0 --port 8080  # explicit port
 ```
 
 Requires `pip install fastapi uvicorn`. The dashboard reads `analysis.json` files written by `analyze_job.py`. When periodic profiling produced multiple TraceLens profiles, the dashboard shows only node 0's profiles (matching `analyze_job.py`'s selection) and offers a profile selector.
