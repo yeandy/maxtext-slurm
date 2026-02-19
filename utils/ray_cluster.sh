@@ -24,7 +24,8 @@ RAY_METRICS_PORT=55080
 PROMETHEUS_PORT=9090
 
 # Persist Ray logs to the shared job output directory so they survive crashes.
-# Inside Docker, /outputs is mounted from $JOB_WORKSPACE (or $SCRIPT_DIR/outputs) on the host.
+# Inside Docker, /outputs is mounted from $JOB_WORKSPACE
+# (or $SCRIPT_DIR/outputs) on the host.
 # NOTE: We do NOT use --temp-dir for persistence because long paths exceed the
 # 108-char Unix socket limit (sockaddr_un).  Instead, Ray uses the default
 # /tmp/ray temp dir and we symlink its log directory to persistent storage.
@@ -235,7 +236,8 @@ To inspect after the job ends:
 Ray logs are persisted per node under:
   <JOB_WORKSPACE>/<job>/ray_logs/<hostname>/session_*/logs/
 
-Tip: Port conflict when monitoring multiple jobs? Change local port: -L 18265:... -> localhost:18265
+Tip: Port conflict when monitoring multiple jobs?
+  Change local port: -L 18265:... -> localhost:18265
 
 Debug:
   srun --jobid=\${SLURM_JOB_ID} --pty bash
