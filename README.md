@@ -69,14 +69,14 @@ The `skills/` directory contains structured instructions for AI coding assistant
 
 **Launch**
 
-| | |
+| Topic | Description |
 |---|---|
 | [Job Submission](docs/job-submission.md) | `JOB_WORKSPACE`, full `submit.sh` syntax, local runs, checkpointing, model aliases, environment config, artifacts |
 | [Model Configs](docs/model-configs.md) | Available models, adding new configs (patterns, section layout), resolution rules, CLI overrides |
 
 **Observe**
 
-| | |
+| Topic | Description |
 |---|---|
 | [Observability](docs/observability.md) | Real-time monitoring, post-run diagnostics, unified TSDB, custom metrics plugins, design rationale |
 | [Notifications](docs/notifications.md) | Telegram setup, programmable messaging (`telegram_bot.sh`), automated job monitoring |
@@ -86,7 +86,7 @@ The `skills/` directory contains structured instructions for AI coding assistant
 
 **Adapt**
 
-| | |
+| Topic | Description |
 |---|---|
 | [Architecture](docs/architecture.md) | Training flow, artifact system, observability pipeline, orchestrator extensibility |
 | [Extensibility](docs/extensibility.md) | Layer map; how to swap schedulers, runtimes, training frameworks, or GPU vendors |

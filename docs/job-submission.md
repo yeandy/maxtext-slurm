@@ -45,7 +45,7 @@ A warning is printed if the path doesn't appear to be on a shared filesystem. Th
 #
 # The -- separator splits sbatch arguments from passthrough arguments.
 #
-# Examples (using  as placeholder for wherever the repo is cloned):
+# Examples (using $REPO as placeholder for wherever the repo is cloned):
 #   submit.sh 70b -N 1                                      # llama2-70b on 1 node
 #   submit.sh 70b:baseline -N 1                             # With experiment tag
 #   submit.sh 70b -N 2 --time=24:00:00                      # Multiple sbatch args

@@ -79,7 +79,7 @@ utils/merge_xplane_traces.py node0.trace.json.gz node1.trace.json.gz -o combined
 pip install git+https://github.com/AMD-AGI/TraceLens.git
 ```
 
-> **Note:** In environments with TensorFlow 2.19+ / `xprof`, TraceLens requires source patches before it will run. See `skills/performance-analysis/tracelens-patches.md` for details.
+> **Note:** In environments with TensorFlow 2.19+ / `xprof`, TraceLens requires source patches before it will run. See [tracelens-patches.md](../skills/performance-analysis/tracelens-patches.md) for details.
 
 Generate a full performance report from an xplane trace:
 

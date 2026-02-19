@@ -9,7 +9,7 @@ python3 -c "import TraceLens; print(TraceLens.__path__[0])"
 
 ## Patch sequence
 
-Apply these patches in order. There are 5 files, 13 patches total.
+Apply these patches in order. There are 6 files, 13 patches total.
 
 ---
 

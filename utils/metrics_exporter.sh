@@ -183,7 +183,8 @@ collect_metrics() {
         duration_ms=0
     fi
 
-    # Format as seconds with millisecond precision using pure bash (no python3 subprocess)
+    # Format as seconds with ms precision using pure bash
+    # (no python3 subprocess)
     local duration_sec
     duration_sec="$(( duration_ms / 1000 )).$(printf '%03d' "$(( duration_ms % 1000 ))")"
 

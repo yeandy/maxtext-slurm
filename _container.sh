@@ -231,7 +231,8 @@ else
 
         # Try anonymous pull first (works for public images).
         if ! "${DOCKER_CMD[@]}" pull "$DOCKER_REGISTRY/$DOCKER_IMAGE" 2>/dev/null; then
-            # Anonymous pull failed — attempt authenticated pull if credentials are configured.
+            # Anonymous pull failed — attempt authenticated pull
+            # if credentials are configured.
             if [[ -n "${DOCKER_TOKEN:-}" && -n "${DOCKER_USERNAME:-}" ]]; then
                 echo "[INFO] Anonymous pull failed. Logging in to $DOCKER_REGISTRY as $DOCKER_USERNAME ..."
                 if ! echo "$DOCKER_TOKEN" | "${DOCKER_CMD[@]}" login -u "$DOCKER_USERNAME" --password-stdin "$DOCKER_REGISTRY"; then
