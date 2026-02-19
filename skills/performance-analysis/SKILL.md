@@ -152,12 +152,13 @@ Large per-GPU variance in compute % indicates load imbalance. High exposed comm 
 
 **After every analysis run, always ensure the dashboard is running and give the user the URL.**
 
-1. Check if a perf dashboard is **already running**:
+1. **Check `analyze_job.py` output first** — it scans ports 8080-8099 and prints a `Dashboard:` line at the end. If it shows a URL with `(running)`, the server is already up. Use that URL and skip to step 4.
+2. **Fallback** (only if `analyze_job.py` wasn't run or its output is unavailable): check manually with a broad grep that matches both the script name and python invocations:
    ```bash
-   ss -tlnp | grep perf_server
+   ss -tlnp | grep -E 'perf_server|python.*perf_server'
    ```
-2. If **already running**, just reuse it — note the port from the output and skip to step 4.
-3. If **not running**, start it:
+   If a match is found, note the port and skip to step 4.
+3. If **neither check** found a running dashboard, start it:
    ```bash
    pip install fastapi uvicorn   # one-time
 
@@ -166,8 +167,6 @@ Large per-GPU variance in compute % indicates load imbalance. High exposed comm 
    ```
 4. **Always** tell the user the dashboard URL: `http://<host>:<PORT>`
 
-**Port conflict handling:** `perf_server.py` auto-detects a free port starting from 8080 (skipping any port already in use). If you need a specific port, pass `--port <N>`. The perf server auto-reloads `analysis.json` on each request, so a running server picks up new analysis results without restart. `analyze_job.py` scans ports 8080-8099 to find the running dashboard automatically.
-
-`analyze_job.py` also prints a dashboard hint at the end of its output — if the server is running it shows the URL, otherwise it shows the start command.
+**Port conflict handling:** `perf_server.py` auto-detects a free port starting from 8080 (skipping any port already in use). If you need a specific port, pass `--port <N>`. The perf server auto-reloads `analysis.json` on each request, so a running server picks up new analysis results without restart.
 
 Features: job listing with sortable metrics, per-step TGS/MFU/loss charts, HLO viewer with comm/compute filters, GPU utilization pie and per-GPU bar charts, file browser with Perfetto links for xplane traces, per-directory and full-job zip download, and side-by-side job comparison. The file browser filters external profile files to only show those belonging to the viewed job (using the same time-window + node-0 disambiguation as `analyze_job.py`).
