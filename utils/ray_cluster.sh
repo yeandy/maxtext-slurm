@@ -16,7 +16,9 @@ export RAY_event_stats_print_interval_ms=${RAY_event_stats_print_interval_ms:-0}
 export RAY_health_check_period_ms=${RAY_health_check_period_ms:-30000}            # 30s (default ~10s)
 export RAY_num_heartbeats_timeout=${RAY_num_heartbeats_timeout:-20}               # tolerate slower heartbeats
 
-RAY_PORT=${RAY_PORT:-6379}
+# RAY_PORT must be set by the caller (run_setup.sh, _job.sbatch, or
+# _container.sh --env).  No default — prevents silent fallback to a
+# potentially occupied port.
 RAY_HEAD_IP="${JAX_COORDINATOR_IP:-localhost}"
 RAY_METRICS_PORT=8080
 PROMETHEUS_PORT=9090
@@ -88,11 +90,14 @@ install_ray() {
 
 start_ray_head() {
     echo "[Ray] Starting HEAD on $(hostname):${RAY_PORT}"
-    ray start --head --port=$RAY_PORT \
+    if ! ray start --head --port=$RAY_PORT \
         --num-cpus=1 \
         --dashboard-host=0.0.0.0 --dashboard-port=8265 \
         --metrics-export-port=$RAY_METRICS_PORT \
-        --disable-usage-stats &>/dev/null || return 1
+        --disable-usage-stats 2>&1; then
+        echo "[Ray] HEAD failed to start (port $RAY_PORT, dashboard 8265)" >&2
+        return 1
+    fi
     _persist_ray_logs
 
     for _ in {1..30}; do ray status &>/dev/null && return 0; sleep 2; done
@@ -168,6 +173,8 @@ start_ray_cluster() {
     ray stop --force &>/dev/null || true
     pkill -f "prometheus" &>/dev/null || true
     pkill -f "metrics_exporter.sh" &>/dev/null || true
+    # Wait for ports to be released after SIGKILL
+    sleep 2
 
     # Node metrics exporter runs on EVERY node (not just head)
     start_metrics_exporter

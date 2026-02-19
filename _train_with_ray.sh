@@ -27,6 +27,7 @@ trap cleanup EXIT
 if ! start_ray_cluster; then
     echo "[!] Ray cluster failed, falling back to non-Ray mode"
     trap - EXIT
+    unset USE_RAY
     exec "$SCRIPT_DIR/_train.sh" "$@"
 fi
 
