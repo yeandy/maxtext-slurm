@@ -25,6 +25,8 @@ The dispatcher detects which artifacts exist and runs only the relevant tools:
 - **`*.xplane.pb`** -> `TraceLens_generate_perf_report_jax`
 - **`xla_dump/*.gpu_after_optimizations.txt`** -> `IRLens_analyze_hlo_ir.py`
 
+**If `analyze_job.py` reports TraceLens is not installed but xplane traces exist**, install and patch it before re-running (see "TraceLens auto-install" section below).
+
 For running jobs, pass `-f` to force re-analysis (bypasses staleness check). TGS metrics are computed but renames are always deferred until the job finishes:
 
 ```bash
@@ -84,6 +86,26 @@ Find xplane files: `<job_dir>/**/tensorboard/plugins/profile/**/*.xplane.pb`
 
 If TraceLens fails with protobuf/xprof errors (TF 2.19+), see [tracelens-patches.md](tracelens-patches.md) for required patches.
 
+#### TraceLens auto-install
+
+When `analyze_job.py` output says "TraceLens not installed" but xplane traces exist, **do not skip** — install and patch immediately, then re-run:
+
+1. Install TraceLens:
+   ```bash
+   pip install git+https://github.com/AMD-AGI/TraceLens.git
+   ```
+2. Apply all patches from [tracelens-patches.md](tracelens-patches.md). There are 6 files and ~13 patches total. Key issues the patches fix:
+   - **protobuf/xprof import errors** (TF 2.19+ renames `tensorboard_plugin_profile` to `xprof`; also catch `TypeError` from stale protobuf descriptors, not just `ImportError`)
+   - **GPU PID remapping** (xprof remaps device PIDs to 1001-1008 range; code that filters `pid < 100` misses all GPU events)
+   - **metadata_events not passed** to `build_tree()`
+   - **KeyError on `gpu_kernel_op_cat`** and missing parent events for launch latency
+3. Re-run analysis with `-f`:
+   ```bash
+   python3 utils/analyze_job.py -f /outputs/<job_dir>/
+   ```
+
+This is a **one-time setup per environment**. Once patched, TraceLens works for all subsequent jobs.
+
 ### IRLens (HLO static analysis)
 
 Parses the XLA HLO dump for communication/computation ops.
@@ -128,16 +150,24 @@ Large per-GPU variance in compute % indicates load imbalance. High exposed comm 
 
 **After every analysis run, always ensure the dashboard is running and give the user the URL.**
 
-1. Check if port 8080 is already listening:
+1. Check if a perf dashboard is **already running**:
    ```bash
-   ss -tlnp | grep 8080
+   ss -tlnp | grep perf_server
    ```
-2. If **not running**, install deps and start in background:
+2. If **already running**, just reuse it — note the port from the output and skip to step 4.
+3. If **not running**, find a free port and start:
    ```bash
    pip install fastapi uvicorn   # one-time
-   utils/perf_server.py --host 0.0.0.0 --port 8080 &
+
+   # Try port 8080 first; if occupied by another process (e.g. Ray Dashboard),
+   # use the next available port (8081, 8082, ...).
+   PORT=8080
+   while ss -tlnp | grep -q ":${PORT} "; do PORT=$((PORT + 1)); done
+   utils/perf_server.py --host 0.0.0.0 --port $PORT &
    ```
-3. **Always** tell the user the dashboard URL: `http://<host>:8080`
+4. **Always** tell the user the dashboard URL: `http://<host>:<PORT>`
+
+**Port conflict handling:** Port 8080 is commonly used by Ray Dashboard or other services. Do not assume 8080 is available — always check with `ss -tlnp` first. If occupied by a non-perf-dashboard process, increment the port rather than killing the existing process. The perf server auto-reloads `analysis.json` on each request, so a running server picks up new analysis results without restart.
 
 `analyze_job.py` also prints a dashboard hint at the end of its output — if the server is running it shows the URL, otherwise it shows the start command.
 
