@@ -1033,7 +1033,22 @@ examples:
     return parser
 
 
-_DASHBOARD_PORT = 8080
+_DASHBOARD_PREFERRED_PORT = 8080
+_DASHBOARD_PORT_RANGE = range(8080, 8100)
+
+
+def _find_dashboard_port() -> int | None:
+    """Scan a small port range to find a running perf_server."""
+    for port in _DASHBOARD_PORT_RANGE:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.3)
+            s.connect(("127.0.0.1", port))
+            s.close()
+            return port
+        except OSError:
+            continue
+    return None
 
 
 def _dashboard_hint() -> None:
@@ -1041,19 +1056,16 @@ def _dashboard_hint() -> None:
     server_script = SCRIPT_DIR / "perf_server.py"
     if not server_script.exists():
         return
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(0.3)
-        s.connect(("127.0.0.1", _DASHBOARD_PORT))
-        s.close()
+    port = _find_dashboard_port()
+    if port is not None:
         print(
             f"\n{CYAN}Dashboard:{RESET} "
-            f"http://0.0.0.0:{_DASHBOARD_PORT}  (running)"
+            f"http://0.0.0.0:{port}  (running)"
         )
-    except OSError:
+    else:
         print(
             f"\n{CYAN}Start dashboard:{RESET}  "
-            f"utils/perf_server.py --host 0.0.0.0 --port {_DASHBOARD_PORT}"
+            f"utils/perf_server.py --host 0.0.0.0"
         )
 
 

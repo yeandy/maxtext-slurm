@@ -94,7 +94,7 @@ add('# TYPE hw_gpu_vram_total_bytes gauge')
 # NOTE: GPU utilization is NOT collected here because the sysfs
 # gpu_busy_percent / mem_busy_percent files return 0 on MI355 OAM
 # with current ROCm drivers.  Use ray_node_gpus_utilization from
-# Ray's Prometheus exporter (port 8080) instead — it works and
+# Ray's Prometheus exporter (RAY_METRICS_PORT, default 18080) instead — it works and
 # provides per-GPU utilization with a GpuIndex label.
 
 amd_gpus = discover_amd_gpus()

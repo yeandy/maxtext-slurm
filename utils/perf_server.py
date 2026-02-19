@@ -17,6 +17,7 @@ import argparse
 import csv
 import json
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -633,6 +634,18 @@ async def compare_jobs(jobs: str = Query(..., description="Comma-separated job I
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
+_PREFERRED_PORT = 8080
+
+
+def _find_free_port(preferred: int = _PREFERRED_PORT, max_tries: int = 20) -> int:
+    """Try *preferred* first, then increment until a free port is found."""
+    for port in range(preferred, preferred + max_tries):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(("127.0.0.1", port)) != 0:
+                return port
+    return preferred
+
+
 def main():
     import uvicorn
 
@@ -645,8 +658,8 @@ def main():
         help="bind address (default: 127.0.0.1, use 0.0.0.0 for remote access)",
     )
     parser.add_argument(
-        "--port", type=int, default=8080,
-        help="port (default: 8080)",
+        "--port", type=int, default=None,
+        help="port (default: auto-detect from 8080)",
     )
     parser.add_argument(
         "--outputs-dir",
@@ -654,6 +667,8 @@ def main():
         help="outputs directory (default: JOB_WORKSPACE or ../outputs)",
     )
     args = parser.parse_args()
+
+    port = args.port if args.port is not None else _find_free_port()
 
     import os
     outputs = args.outputs_dir or os.environ.get(
@@ -663,10 +678,12 @@ def main():
 
     print(f"Serving MaxText Perf Dashboard")
     print(f"  Outputs dir: {_outputs_dir}")
-    print(f"  URL: http://{args.host}:{args.port}")
+    print(f"  URL: http://{args.host}:{port}")
+    if args.port is None and port != _PREFERRED_PORT:
+        print(f"  (port {_PREFERRED_PORT} was occupied, using {port})")
     print()
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    uvicorn.run(app, host=args.host, port=port, log_level="info")
 
 
 if __name__ == "__main__":
