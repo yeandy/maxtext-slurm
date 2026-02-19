@@ -5,14 +5,11 @@ description: Analyze MaxText training job performance using tgs_tagger, TraceLen
 
 # MaxText Performance Analysis
 
-Post-training (or mid-training) analysis pipeline. Detects available artifacts in a job's output directory and runs the appropriate tools.
+Post-training (or mid-training) analysis pipeline. Follow the workflow below from top to bottom.
 
-## Workflow (follow this order)
+## Workflow
 
-1. **Run `analyze_job.py` first** — before reading `analysis.json`. The dispatcher automatically detects staleness: it skips re-analysis when the job is finished and `analysis.json` is newer than the log file; otherwise it re-runs. Pass `-f` to force re-analysis regardless.
-2. Read the generated `analysis.json` and any tool output.
-3. Summarize key findings per the "Interpreting results" table below.
-4. Ensure the web dashboard is running (see "Web dashboard" section).
+### Step 1: Run the dispatcher
 
 ```bash
 python3 utils/analyze_job.py /outputs/<job>.log
@@ -20,153 +17,154 @@ python3 utils/analyze_job.py /outputs/<job_dir>/
 python3 utils/analyze_job.py /outputs/local_2026*
 ```
 
-The dispatcher detects which artifacts exist and runs only the relevant tools:
-- **Log file with TGS data** -> `tgs_tagger.py`
-- **`*.xplane.pb`** -> `TraceLens_generate_perf_report_jax`
-- **`xla_dump/*.gpu_after_optimizations.txt`** -> `IRLens_analyze_hlo_ir.py`
-
-**If `analyze_job.py` reports TraceLens is not installed but xplane traces exist**, install and patch it before re-running (see "TraceLens auto-install" section below).
-
-For running jobs, pass `-f` to force re-analysis (bypasses staleness check). TGS metrics are computed but renames are always deferred until the job finishes:
+For running jobs, pass `-f` to force re-analysis (bypasses staleness check):
 
 ```bash
 python3 utils/analyze_job.py -f /outputs/<job>.log
 ```
 
-## Job output layout
+The dispatcher auto-detects available artifacts and runs only the relevant tools:
+- **Log with TGS data** → `tgs_tagger.py`
+- **`*.xplane.pb`** → `TraceLens_generate_perf_report_jax`
+- **`xla_dump/*.gpu_after_optimizations.txt`** → `IRLens_analyze_hlo_ir.py`
+
+### Step 2: Handle TraceLens if needed
+
+If the dispatcher output says **"TraceLens not installed"** and xplane traces exist:
+
+1. **Check if TraceLens is already installed and patched** before doing anything:
+   ```bash
+   python3 -c "
+   import TraceLens.util, inspect
+   src = inspect.getsource(TraceLens.util.DataLoader.load_data)
+   assert 'xprof' in src, 'not patched'
+   print('TraceLens: installed and patched')
+   "
+   ```
+   - **Succeeds** → TraceLens is ready. Just re-run: `python3 utils/analyze_job.py -f /outputs/<job>.log`
+   - **ImportError** → not installed. Install then patch (see below).
+   - **AssertionError** → installed but unpatched. Patch only (see below).
+
+2. **Install** (only if import failed):
+   ```bash
+   pip install git+https://github.com/AMD-AGI/TraceLens.git
+   ```
+
+3. **Patch** (only if the `xprof` assertion failed). Apply all patches from [tracelens-patches.md](tracelens-patches.md) — 6 files, ~13 patches. Key fixes:
+   - protobuf/xprof import errors (TF 2.19+ renamed `tensorboard_plugin_profile` to `xprof`)
+   - GPU PID remapping (`xprof` remaps device PIDs to 1001+; code filtering `pid < 100` misses all GPU events)
+   - `metadata_events` not passed to `build_tree()`
+   - `KeyError` on `gpu_kernel_op_cat` and missing parent events for launch latency
+
+4. **Re-run** the dispatcher with `-f`:
+   ```bash
+   python3 utils/analyze_job.py -f /outputs/<job>.log
+   ```
+
+This is one-time per environment. Always check before patching to avoid redundant work.
+
+### Step 3: Read results
+
+Read the generated `analysis.json` — but do NOT try to read the raw file (it can be 40K+ lines due to per-step arrays). Extract key metrics programmatically:
+
+```bash
+python3 -c "
+import json, sys
+with open('<job_dir>/analysis.json') as f:
+    d = json.load(f)
+print(f'Job: {d[\"job_id\"]} | Model: {d[\"model\"]} | Nodes: {d[\"num_nodes\"]} | Status: {d[\"job_status\"][\"status\"]}')
+tgs = d['tgs']
+print(f'Steady TGS: {tgs[\"steady\"][\"mean\"]:.1f} (std={tgs[\"steady\"][\"std\"]:.1f}, steps {tgs[\"steady\"][\"range\"]})')
+print(f'Tail   TGS: {tgs[\"tail\"][\"mean\"]:.1f} (std={tgs[\"tail\"][\"std\"]:.1f}, steps {tgs[\"tail\"][\"range\"]})')
+tl = d.get('tracelens_summary', {})
+if tl:
+    print(f'Compute: {tl[\"computation_time\"]:.1f}% | Exposed comm: {tl[\"exposed_comm_time\"]:.1f}% | Idle: {tl[\"idle_time\"]:.2f}% | Total comm: {tl[\"total_comm_time\"]:.1f}%')
+"
+```
+
+For deeper TraceLens analysis, read the CSVs in `<job_dir>/tracelens/<timestamp>/csvs/`:
+- `gpu_events_averages.csv` — per-GPU compute/comm/idle breakdown (averages)
+- `gpu_timeline.csv` — per-GPU breakdown with pid
+- `kernel_launchers_summary_by_category.csv` — time by kernel category (GEMM, NCCL, XLA fusions, etc.)
+- `kernel_launchers_summary.csv` — time by individual kernel name
+
+### Step 4: Summarize findings
+
+Present results using this structure:
+
+| Metric | Source | What to look for |
+|--------|--------|------------------|
+| **TGS** (steady-state) | `analysis.json` → `tgs.steady` | Primary throughput metric |
+| **MFU** | `analysis.json` → `mfu_per_step` | Model FLOPS utilization (if available) |
+| **GPU compute %** | `tracelens_summary.computation_time` | Time on actual compute kernels |
+| **Exposed comm %** | `tracelens_summary.exposed_comm_time` | Communication NOT overlapped with compute (lower is better) |
+| **Idle %** | `tracelens_summary.idle_time` | GPU doing nothing (should be near 0) |
+| **Kernel breakdown** | `kernel_launchers_summary_by_category.csv` | GEMM vs NCCL vs fusion time |
+| **Comm ops per step** | dispatcher IRLens output | Count of all-reduce, all-gather, all-to-all, reduce-scatter |
+
+Interpretation guidelines:
+- High exposed comm % → opportunities for better comm/compute overlap
+- Large per-GPU variance in compute % → load imbalance
+- High idle % → scheduling or synchronization issues
+- Tail TGS std much larger than steady std → periodic overhead (checkpointing, profiling)
+
+### Step 5: Ensure dashboard is running
+
+**Check the dispatcher output first** — it prints a `Dashboard:` line at the end. If it shows a URL with `(running)`, use that URL.
+
+If the dashboard is not running, start it:
+
+```bash
+pip install fastapi uvicorn   # one-time
+utils/perf_server.py --host 0.0.0.0 &
+```
+
+**Always tell the user the dashboard URL:** `http://<host>:<PORT>`
+
+The server auto-detects a free port starting from 8080 and auto-reloads `analysis.json` on each request.
+
+## Reference
+
+### Job output layout
 
 ```
 /outputs/<JOB_ID>-<JOB_NAME>[-TGS_<VALUE>]/
   log -> ../<log_file>                          # symlink to log file
-  analysis.json                                 # structured metrics (written by analyze_job.py)
+  analysis.json                                 # structured metrics
   xla_dump/                                     # if _env_ENABLE_XLA_DUMP=1
     module_NNNN.jit_train_step.*_gpu_after_optimizations.txt
-    *-buffer-assignment.txt
   <run_name>/tensorboard/plugins/profile/<ts>/
     <hostname>.xplane.pb                        # if profiler=xplane
-  tracelens/                                    # created by TraceLens
-    <ts>/csvs/*.csv                               # per profiling window
-    <ts>/*_report.xlsx
+  tracelens/<ts>/csvs/*.csv                     # created by TraceLens
 ```
 
 The `.log` file sits alongside the directory in `/outputs/`.
 
-When `enable_checkpointing=true`, `OUTPUT_PATH` points to a shared model-based directory instead of the per-job directory. Profiler traces (`*.xplane.pb`) and TensorBoard events may end up outside the job directory. `analyze_job.py` parses `Config param tensorboard_dir` from the log to locate these external artifacts. The resolved paths are stored in `analysis.json` under `artifacts.tensorboard_dir` and `artifacts.profile_dir` (when external).
+When `enable_checkpointing=true`, profiler traces may end up in a shared directory outside the job dir. `analyze_job.py` parses `Config param tensorboard_dir` from the log to locate these. The dispatcher and `perf_server.py` filter profiles by job execution time window and node-0 hostname to disambiguate.
 
-**Shared directory disambiguation:** When multiple jobs write profiles to the same shared directory, both `analyze_job.py` and `perf_server.py` filter profile timestamps using two criteria: (1) **time window** — the profile timestamp must fall within the job's execution window (artifact dir ctime → log mtime), and (2) **node-0 hostname** — the directory must contain an xplane file from the job's node 0. Sibling timestamp directories within 60 seconds of an anchor are included (nodes in a profiling session start seconds apart). This correctly handles node reuse across jobs and periodic profiling (`profile_periodically_period > 0`).
+### Running individual tools directly
 
-## Individual tools
-
-### tgs_tagger (TGS metrics)
-
-Extracts steady-state Tokens/GPU/Second from the log, renames the log file and job directory.
+These are rarely needed — `analyze_job.py` orchestrates them. Use only for targeted re-runs.
 
 ```bash
+# TGS tagging
 utils/tag_tgs.sh <log_file_or_glob>
 utils/tag_tgs.sh -f <log_file>       # force on running job
-```
 
-- Discards warmup steps 0-4, measures from steps 5-14.
-- Needs `steps >= 15` for a full steady-state window.
-- With `-f` on a running job: renames log file immediately, defers directory rename until the job finishes.
-
-### TraceLens (runtime trace analysis)
-
-GPU kernel utilization, GEMM performance, and communication patterns from xplane traces.
-
-```bash
-pip install git+https://github.com/AMD-AGI/TraceLens.git
-TraceLens_generate_perf_report_jax \
-    --profile_path <xplane.pb> \
-    --output_xlsx_path <job_dir>/tracelens/<ts>/report.xlsx \
-    --output_csvs_dir <job_dir>/tracelens/<ts>/csvs
-```
-
-Find xplane files: `<job_dir>/**/tensorboard/plugins/profile/**/*.xplane.pb`
-
-`analyze_job.py` selects **node 0's xplane** for analysis (parsed from `SLURM_JOB_NODELIST` or `JOB_NODELIST` in the log). In SPMD training all hosts execute the same program, so node 0 is representative. Distributed profiling may scatter host traces across multiple timestamp directories — filtering by node 0 naturally deduplicates to one trace per profiling step. When profiles live in a shared directory (`enable_checkpointing=true`), the job's execution time window is also applied to avoid picking up profiles from other jobs (see "Shared directory disambiguation" above).
-
-If TraceLens fails with protobuf/xprof errors (TF 2.19+), see [tracelens-patches.md](tracelens-patches.md) for required patches.
-
-#### TraceLens auto-install
-
-When `analyze_job.py` output says "TraceLens not installed" but xplane traces exist, **do not skip** — install and patch immediately, then re-run:
-
-1. Install TraceLens:
-   ```bash
-   pip install git+https://github.com/AMD-AGI/TraceLens.git
-   ```
-2. Apply all patches from [tracelens-patches.md](tracelens-patches.md). There are 6 files and ~13 patches total. Key issues the patches fix:
-   - **protobuf/xprof import errors** (TF 2.19+ renames `tensorboard_plugin_profile` to `xprof`; also catch `TypeError` from stale protobuf descriptors, not just `ImportError`)
-   - **GPU PID remapping** (xprof remaps device PIDs to 1001-1008 range; code that filters `pid < 100` misses all GPU events)
-   - **metadata_events not passed** to `build_tree()`
-   - **KeyError on `gpu_kernel_op_cat`** and missing parent events for launch latency
-3. Re-run analysis with `-f`:
-   ```bash
-   python3 utils/analyze_job.py -f /outputs/<job_dir>/
-   ```
-
-This is a **one-time setup per environment**. Once patched, TraceLens works for all subsequent jobs.
-
-### IRLens (HLO static analysis)
-
-Parses the XLA HLO dump for communication/computation ops.
-
-```bash
+# IRLens
 utils/IRLens_analyze_hlo_ir.py <hlo_file>
 utils/IRLens_analyze_hlo_ir.py <hlo_file> --op communication
 utils/IRLens_analyze_hlo_ir.py <hlo_file> --op computation
-utils/IRLens_analyze_hlo_ir.py <hlo_file> --name --topology --fusion-stats
+
+# TraceLens
+TraceLens_generate_perf_report_jax \
+    --profile_path <xplane.pb> \
+    --output_csvs_dir <output_dir>/csvs
 ```
 
-Find the HLO file: `<job_dir>/xla_dump/module_*.jit_train_step.*_gpu_after_optimizations.txt` (use the highest module number if multiple exist).
+### Running jobs
 
-## Running jobs
-
-The dispatcher and tgs_tagger detect running jobs by checking for the `JOB SUMMARY` log marker and file modification time (15 min threshold).
-
-- `analyze_job.py` never forwards `-f` to `tgs_tagger`, so **no renames happen** during analysis of running jobs. Renames happen automatically on the next analysis after the job finishes.
-- Standalone `tgs_tagger -f` on a running job renames the log file (safe — fd follows inode) but defers the directory rename.
-- `analyze_job.py -f` only bypasses the staleness check; it does not force renames.
-- TraceLens needs a completed profiler trace; if `*.xplane.pb` doesn't exist yet, it's skipped.
-- IRLens works on running jobs if `xla_dump/` is already populated (XLA dumps during compilation, before training steps).
-- Re-running after the job finishes is handled automatically: the staleness check detects that `job_status` was `running` and triggers a full re-analysis, which renames the log/directory and picks up final artifacts.
-
-## Interpreting results
-
-After analysis, summarize key findings:
-
-| Metric | Source | What to look for |
-|--------|--------|------------------|
-| **TGS** (steady-state) | tgs_tagger | Primary throughput metric |
-| **MFU** | tgs_tagger log output | Model FLOPS utilization |
-| **GPU compute %** | TraceLens `gpu_events_averages.csv` | Time on actual compute kernels |
-| **Exposed comm %** | TraceLens | Communication NOT overlapped with compute (lower is better) |
-| **Idle %** | TraceLens | GPU doing nothing (should be near 0) |
-| **Comm ops** | IRLens `--op communication` | Total collectives per step |
-| **Compute ops** | IRLens `--op computation` | Fusion kernels, GEMMs, attention calls |
-
-Large per-GPU variance in compute % indicates load imbalance. High exposed comm % suggests opportunities for better overlap (latency hiding scheduler, pipelining flags in `train_env.sh`).
-
-## Web dashboard (required post-analysis step)
-
-**After every analysis run, always ensure the dashboard is running and give the user the URL.**
-
-1. **Check `analyze_job.py` output first** — it scans ports 8080-8099 and prints a `Dashboard:` line at the end. If it shows a URL with `(running)`, the server is already up. Use that URL and skip to step 4.
-2. **Fallback** (only if `analyze_job.py` wasn't run or its output is unavailable): check manually with a broad grep that matches both the script name and python invocations:
-   ```bash
-   ss -tlnp | grep -E 'perf_server|python.*perf_server'
-   ```
-   If a match is found, note the port and skip to step 4.
-3. If **neither check** found a running dashboard, start it:
-   ```bash
-   pip install fastapi uvicorn   # one-time
-
-   # perf_server.py auto-detects a free port starting from 8080.
-   utils/perf_server.py --host 0.0.0.0 &
-   ```
-4. **Always** tell the user the dashboard URL: `http://<host>:<PORT>`
-
-**Port conflict handling:** `perf_server.py` auto-detects a free port starting from 8080 (skipping any port already in use). If you need a specific port, pass `--port <N>`. The perf server auto-reloads `analysis.json` on each request, so a running server picks up new analysis results without restart.
-
-Features: job listing with sortable metrics, per-step TGS/MFU/loss charts, HLO viewer with comm/compute filters, GPU utilization pie and per-GPU bar charts, file browser with Perfetto links for xplane traces, per-directory and full-job zip download, and side-by-side job comparison. The file browser filters external profile files to only show those belonging to the viewed job (using the same time-window + node-0 disambiguation as `analyze_job.py`).
+- The dispatcher detects running jobs via the `JOB SUMMARY` log marker and file modification time (15 min threshold).
+- `analyze_job.py -f` bypasses the staleness check but never renames files for running jobs. Renames happen automatically on the next analysis after the job finishes.
+- TraceLens needs a completed profiler trace; skipped if `*.xplane.pb` doesn't exist yet.
+- IRLens works on running jobs if `xla_dump/` is already populated.
