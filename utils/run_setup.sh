@@ -120,7 +120,7 @@ ln -snf "../$JOB_DIR.log" "$JOB_WORKSPACE/$JOB_DIR/log"
     echo "JOB_NAME=$JOB_NAME"
     echo "NNODES=$NNODES"
     echo "NODE_RANK=$NODE_RANK"
-    echo "HOSTNAME=$(hostname)"
+    echo "JOB_NODELIST=$(hostname)"
     echo "PASSTHROUGH_ARGS=\"${PASSTHROUGH_ARGS[*]}\""
     echo "MODEL_NAME=$MODEL_NAME"
     if [[ -n "$MODEL_NAME_ALIAS" ]]; then echo "MODEL_NAME_ALIAS=$MODEL_NAME_ALIAS"; fi
