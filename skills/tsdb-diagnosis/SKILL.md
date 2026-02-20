@@ -27,7 +27,7 @@ This skill requires a Prometheus TSDB, which is only available for `RAY=1` jobs.
 
    Without triage, you risk misinterpreting metrics (e.g., querying post-hang idle metrics as if they were training metrics, or missing that a checkpoint restore caused resource leaks). For proactive health checks on a live job where no failure has occurred, triage is still useful to confirm the job is running and extract the head node hostname/port.
 
-1. **Locate the TSDB.** Resolve the job directory (same rules as triage: given a log file, job dir, or Slurm ID). Verify `<job_dir>/prometheus/` exists **and contains data** — it should have subdirectories with ULID names (e.g., `01KHV6MFN61MJKZ3ZSYYRYGDGX`) and/or a `wal/` directory. An empty or near-empty `prometheus/` directory means Prometheus failed to start or never scraped — report "no TSDB data" and skip to log-only diagnosis.
+1. **Locate the TSDB.** Resolve the job directory (same rules as triage: given a log file, job dir, or Slurm ID). Verify `<job_dir>/prometheus/` exists **and contains data** — it should have subdirectories with ULID names (e.g., `01KHV6MFN61MJKZ3ZSYYRYGDGX`) and/or a `wal/` directory. An empty or near-empty `prometheus/` directory means Prometheus failed to start or never scraped — check the observability stack logs (see "Troubleshooting Missing or Incomplete TSDB Data"), report what went wrong, and skip to log-only diagnosis.
 
 2. **Connect to Prometheus.** First determine whether the job is still running, then choose the appropriate access method.
 
@@ -298,6 +298,47 @@ Ray worker logs are the second source of truth alongside TSDB metrics. They cont
 - Worker logs can be very large. Use grep to search, don't read entire files.
 - The head node (task 0) typically has the most informative logs — start there.
 - When comparing two jobs, grep for the same pattern in both and diff the output (e.g., count NCCL init waves in each).
+
+## Troubleshooting Missing or Incomplete TSDB Data
+
+When the TSDB is empty, has gaps, or is missing metric families, the problem is in the observability stack itself. The stack has three components, each with its own persistent log:
+
+| Component | Log location | What it does |
+|-----------|-------------|--------------|
+| **Prometheus** | `<job_dir>/prometheus/prometheus.log` | Scrapes targets, stores time series |
+| **Metrics exporter** | `<job_dir>/metrics_exporter/<hostname>.log` | Runs plugins (`gpu_metrics_plugin.sh`, `host_metrics_plugin.sh`, `tb_metrics_plugin.sh`), serves metrics on port 9400 |
+| **Ray runtime** | `<job_dir>/ray_logs/<hostname>/` (`gcs_server.out`, `raylet.out`, `dashboard.log`, etc.) | Cluster formation, built-in metrics exporter on port 55080 |
+
+All three are persisted in the job directory and survive job termination. The watchdog (`_run_with_watchdog`) restarts Prometheus and the metrics exporter on crash, logging restart events with timestamps.
+
+**Diagnosis by symptom:**
+
+| Symptom | Which log to check | What to look for |
+|---------|-------------------|------------------|
+| TSDB directory empty or missing | Job log (main stdout) | `[Prometheus]` messages — did it start? Did `install_prometheus` fail? Port bind failures? |
+| TSDB has data but with time gaps | `prometheus/prometheus.log` | Crash messages followed by watchdog restarts (`Watchdog: exited with code ... restart #N`). Each restart replays the WAL — gap duration ≈ crash-to-restart time (~5s) |
+| No `hw_*` metrics (but `ray_*` and `tb_*` present) | `metrics_exporter/<hostname>.log` | Plugin errors — `gpu_metrics_plugin.sh` or `host_metrics_plugin.sh` failing. Exit code 99 means permanently skipped |
+| No `tb_*` metrics | `metrics_exporter/<hostname>.log` | `tb_metrics_plugin.sh` failing — usually because TensorBoard event files haven't been written yet (normal during compilation), or the event file path is wrong |
+| No `ray_*` metrics | `ray_logs/<hostname>/` (GCS, raylet, dashboard) | Ray didn't start or its metrics exporter on port 55080 failed. Check `gcs_server.out` and `raylet.out` for errors |
+| Some hosts missing entirely | `prometheus/prometheus.log` | Scrape errors for those hosts — `context deadline exceeded` or `connection refused`. Means Prometheus couldn't reach the exporter on those nodes (node down, network issue, or exporter crashed before Prometheus could scrape) |
+| `hw_scrape_duration_seconds` is high (>8s) | `metrics_exporter/<hostname>.log` | A plugin is running slow. The exporter logs stderr from each plugin; look for timeouts or hangs |
+| All metrics present but stale (not updating) | `prometheus/prometheus.log` + `metrics_exporter/<hostname>.log` | Prometheus may be alive but the exporter is hung. Or Prometheus itself is hung (rare — check for WAL corruption messages) |
+
+**Checking the logs:**
+
+```bash
+# Prometheus crash/restart history
+grep -i 'watchdog\|error\|fatal\|panic\|restart' <job_dir>/prometheus/prometheus.log
+
+# Metrics exporter plugin failures (all hosts at once)
+grep -i 'error\|skip\|fail\|exit' <job_dir>/metrics_exporter/*.log
+
+# Ray runtime issues on head node
+head_host=$(ls <job_dir>/ray_logs/ | head -1)
+grep -i 'error\|fail\|exception' <job_dir>/ray_logs/$head_host/gcs_server.out
+```
+
+**Important:** These logs explain why the TSDB is broken — they don't replace the TSDB for diagnosing the training job. Once you've identified and understood the observability gap, report it alongside whatever partial TSDB data is available, and note which time ranges or metric families should not be trusted.
 
 ## Diagnostic Playbooks
 
