@@ -1,0 +1,67 @@
+# Default base.yml configs
+# ── Architecture ─────────────────────────────────────────────────────────────
+# base_emb_dim: 2048
+# base_num_query_heads: 16
+# base_num_kv_heads: 16
+# base_mlp_dim: 7168
+# base_num_decoder_layers: 16
+# head_dim: 128
+# mlp_activations: ["silu", "linear"]
+
+# ── Run Config ───────────────────────────────────────────────────────────────
+base_config: "base.yml"
+run_name: "default_train_test"
+hardware: "gpu"
+model_name: "default"
+
+# ── Training ─────────────────────────────────────────────────────────────────
+steps: 15
+learning_rate: 3e-4
+metrics_file: ./output/convergence_jax/metrics.default.txt
+
+# ── Parallelism ──────────────────────────────────────────────────────────────
+# At most one DCN axis can be unspecified (-1)
+dcn_data_parallelism: -1 # auto-sharded
+dcn_fsdp_parallelism: 1
+dcn_sequence_parallelism: 1 # never recommended
+dcn_context_parallelism: 1
+dcn_tensor_parallelism: 1 # never recommended
+dcn_pipeline_parallelism: 1
+dcn_expert_parallelism: 1
+# At most one ICI axis can be unspecified (-1)
+ici_data_parallelism: 1
+ici_fsdp_parallelism: 8
+ici_sequence_parallelism: 1
+ici_context_parallelism: 1
+ici_tensor_parallelism: 1
+ici_pipeline_parallelism: 1
+ici_expert_parallelism: 1
+
+# ── Batch & Sequence ─────────────────────────────────────────────────────────
+per_device_batch_size: 64
+max_target_length: 2048
+packing: true
+max_segments_per_seq: 32
+
+# ── Attention & Compute ──────────────────────────────────────────────────────
+attention: "cudnn_flash_te"
+remat_policy: "minimal_flash"
+use_iota_embed: True
+scan_layers: False
+logits_dot_in_fp32: False
+shardy: false
+
+# ── Profiler ─────────────────────────────────────────────────────────────────
+profiler: "" #"xplane"
+upload_all_profiler_results: true
+skip_first_n_steps_for_profiler: 3
+profiler_steps: 1
+
+# ── Checkpointing ────────────────────────────────────────────────────────────
+enable_checkpointing: False
+async_checkpointing: False
+
+# ── Dataset ──────────────────────────────────────────────────────────────────
+dataset_type: hf 
+hf_path: "allenai/c4" 
+hf_data_dir: 'en' 
