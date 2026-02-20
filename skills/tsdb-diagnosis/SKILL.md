@@ -37,31 +37,39 @@ This skill requires a Prometheus TSDB, which is only available for `RAY=1` jobs.
 
    **Critical rule: never delete a TSDB lock file, and never run `prometheus.sh view` against a running job's TSDB.** The lock is held by the live Prometheus instance. Deleting it or starting a second instance against the same TSDB risks data corruption. For finished/crashed jobs, `prometheus.sh view` handles stale lock files automatically (Prometheus detects and replaces them).
 
-   **Case A — Live job (still running):** Prometheus is already running on the job's head node (task 0). Find the head node hostname and port from the SSH tunnel command in the job log (`ssh -L ... <head_host>:<port>`). The port is usually 9190 but may differ if 9190 was occupied at job start (the startup script auto-increments: 9191, 9192, ...). Also check for `[Prometheus] WARNING: port 9190 was occupied; using <port> instead` in the log. Query at `http://<head_host>:<port>` — **not** `localhost:<port>`. The head node hostname comes from the log (e.g., `chi2816`); `localhost:9090` on the machine you are running from may be a completely different Prometheus (e.g., a cluster-level monitor). The SSH tunnel in the log is for the **user's laptop** to reach the head node through a jump host — it binds the port on the user's local machine, not on the head node or any intermediate host. Do **not** start a second Prometheus instance for a live job.
+   **Case A — Live job (still running):** Prometheus is already running on the job's head node (task 0). Find the head node hostname and port from the SSH tunnel command in the job log (`ssh -L ... <head_host>:<port>`). The port is usually 9190 but may differ if 9190 was occupied at job start (the startup script auto-increments: 9191, 9192, ...). Also check for `[Prometheus] WARNING: port 9190 was occupied; using <port> instead` in the log. Query at `http://<head_host>:<port>` — **not** `localhost:<port>`. The head node hostname comes from the log (e.g., `chi2816`); `localhost:9090` on the machine you are running from may be a completely different Prometheus (e.g., a cluster-level monitor). The SSH tunnel command in the log is for the **user's machine** to reach the head node through a jump host — it binds the port on the user's machine (which may be a laptop or the same cluster node you are on), not on the head node. If the user has set up such a tunnel on this machine, `localhost:<port>` already points to the live Prometheus — do not shadow it by starting another instance. Do **not** start a second Prometheus instance for a live job.
 
-   **Case A fallback — Live job but Prometheus is unreachable:** If the head node's Prometheus doesn't respond (connection timeout, firewall, network partition between your machine and the head node), you can still access the TSDB data by copying the immutable blocks (not the WAL or lock file) to a temporary directory and running a read-only Prometheus against the copy:
+   **Case A fallback — Live job but Prometheus is unreachable:** If the head node's Prometheus doesn't respond (connection timeout, firewall, network partition between your machine and the head node), you can still access the TSDB data by copying the immutable blocks (not the WAL or lock file) to a temporary directory and running a read-only Prometheus against the copy. **Run the port scan first** (same as Case B — `ss -tlnp | grep 919`) to find a free port:
    ```bash
    mkdir /tmp/prom_<jobid>_readonly
-   # Copy everything except wal/, chunks_head/, and the lock file
    rsync -a --exclude='wal' --exclude='chunks_head' --exclude='lock' <job_dir>/prometheus/ /tmp/prom_<jobid>_readonly/
    utils/prometheus.sh view /tmp/prom_<jobid>_readonly -p <port> &
+   PROM_FALLBACK_PID=$!
    ```
-   This gives you access to all compacted data but **not** the most recent uncompacted samples still in the WAL. Expect a gap of up to 2 hours at the end of the data. For a long-running job, this is usually sufficient. Clean up with `rm -rf /tmp/prom_<jobid>_readonly` when done.
+   This gives you access to all compacted data but **not** the most recent uncompacted samples still in the WAL. Expect a gap of up to 2 hours at the end of the data. For a long-running job, this is usually sufficient. Clean up in step 8: kill the process first (`kill $PROM_FALLBACK_PID`), then remove the data copy (`rm -rf /tmp/prom_<jobid>_readonly`).
 
-   **Case B — Finished job (completed, failed, or cancelled):** Start a read-only Prometheus against the persisted TSDB:
-   ```bash
-   utils/prometheus.sh view <job_dir>/prometheus -p <port> &
-   ```
-   Use port 9190 by default. If it fails with `bind: address already in use`, check what's occupying it before blindly incrementing:
+   **Case B — Finished job (completed, failed, or cancelled):** Before starting a read-only Prometheus, **always scan for occupied ports first**. The user may have SSH tunnels on this machine forwarding to live Prometheus instances on remote head nodes (e.g., `ssh -L 9190:chi2816:9190 ...` makes the live job's Prometheus available at `localhost:9190`). Starting a read-only Prometheus on the same port would shadow the live database and break the user's monitoring.
    ```bash
    ss -tlnp | grep 919
    ```
-   If stale Prometheus processes from previous diagnosis sessions are occupying ports, kill them (`kill <pid>`) and reuse the port. Only increment (9191, 9192, ...) if the port is occupied by a legitimate process. Wait for "Open http://localhost:" in stdout (typically <3 seconds). Kill the process when done (step 8).
+   Check the process column to classify each occupant:
+   - **`ssh`** — an SSH tunnel the user set up to reach a live job's Prometheus on a remote head node. **Never kill, never shadow.** This is the most common occupant to watch for.
+   - **`prometheus`** — either a live job's Prometheus (if this machine is a head node) or a stale read-only instance from a previous diagnosis session. To distinguish: inspect the cmdline with `cat /proc/<pid>/cmdline | tr '\0' ' '` and check whether `--storage.tsdb.path` points to a running job's directory (live — never kill) or a finished job's directory (stale — safe to kill with `kill <pid>`).
+   - **Anything else** — a legitimate process. Don't touch it.
 
-   **Case C — Multi-job comparison:** At least one job must have a Prometheus TSDB. Start a read-only Prometheus for each finished job that has one, each on a different port:
+   Pick a port that is **not occupied by any process**. Start at 9190 and increment past all occupied ports. **Always capture the PID** so you can reliably kill it later (do not rely on bash `%1` job control — it breaks if any other command is backgrounded in between):
    ```bash
-   utils/prometheus.sh view <job_A_dir>/prometheus -p 9190 &
-   utils/prometheus.sh view <job_B_dir>/prometheus -p 9191 &
+   utils/prometheus.sh view <job_dir>/prometheus -p <port> &
+   PROM_PID=$!
+   ```
+   Wait for "Open http://localhost:" in stdout (typically <3 seconds). Kill the process when done (step 8).
+
+   **Case C — Multi-job comparison:** At least one job must have a Prometheus TSDB. **Run the port scan once** (`ss -tlnp | grep 919`) to find all occupied ports before starting any read-only instances. Assign each finished job a different free port, skipping all occupied ports. Capture each PID:
+   ```bash
+   utils/prometheus.sh view <job_A_dir>/prometheus -p <free_port_1> &
+   PROM_PID_A=$!
+   utils/prometheus.sh view <job_B_dir>/prometheus -p <free_port_2> &
+   PROM_PID_B=$!
    ```
    If one of the jobs is still live, query its existing Prometheus at `http://<head_host>:<port>` (Case A) alongside the read-only instances on localhost. Jobs without a TSDB (`RAY=0`) can only be compared using log-based data from the triage skill. Query each Prometheus on its own address/port and compare results side by side.
 
@@ -178,11 +186,14 @@ This skill requires a Prometheus TSDB, which is only available for `RAY=1` jobs.
 
 7. **Report findings** in the structured format (see Output Format below).
 
-8. **Cleanup.** Kill any read-only Prometheus instances you started in step 2:
+8. **Cleanup — stop read-only instances immediately after each diagnosis.** Kill all read-only Prometheus instances you started in step 2 as soon as you've finished querying them (i.e., after reporting findings in step 7 — do not leave them running "in case you need them later"). Use the PIDs captured in step 2:
    ```bash
-   kill %1 2>/dev/null   # single instance
-   kill %1 %2 2>/dev/null   # multi-job comparison
+   kill $PROM_PID 2>/dev/null        # single instance (Case B)
+   kill $PROM_PID_A $PROM_PID_B 2>/dev/null   # multi-job (Case C)
+   kill $PROM_FALLBACK_PID 2>/dev/null         # Case A fallback
    ```
+   If the user asks a follow-up question that needs the TSDB again, restart the read-only instance at that point (repeating the port scan from step 2). Restarting is cheap (<3 seconds) — leaving instances running leaks ports and risks shadowing SSH tunnels or live Prometheus instances that the user sets up mid-conversation.
+
    Do **not** kill the live Prometheus of a running job.
 
 ## Querying Prometheus
