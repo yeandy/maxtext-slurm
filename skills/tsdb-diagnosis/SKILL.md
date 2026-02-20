@@ -39,11 +39,24 @@ This skill requires a Prometheus TSDB, which is only available for `RAY=1` jobs.
 
    **Case A — Live job (still running):** Prometheus is already running on the job's head node (task 0). Find the head node hostname and port from the SSH tunnel command in the job log (`ssh -L ... <head_host>:<port>`). The port is usually 9190 but may differ if 9190 was occupied at job start (the startup script auto-increments: 9191, 9192, ...). Also check for `[Prometheus] WARNING: port 9190 was occupied; using <port> instead` in the log. Query at `http://<head_host>:<port>` — **not** `localhost:<port>`. The head node hostname comes from the log (e.g., `chi2816`); `localhost:9090` on the machine you are running from may be a completely different Prometheus (e.g., a cluster-level monitor). The SSH tunnel in the log is for the **user's laptop** to reach the head node through a jump host — it binds the port on the user's local machine, not on the head node or any intermediate host. Do **not** start a second Prometheus instance for a live job.
 
+   **Case A fallback — Live job but Prometheus is unreachable:** If the head node's Prometheus doesn't respond (connection timeout, firewall, network partition between your machine and the head node), you can still access the TSDB data by copying the immutable blocks (not the WAL or lock file) to a temporary directory and running a read-only Prometheus against the copy:
+   ```bash
+   mkdir /tmp/prom_<jobid>_readonly
+   # Copy everything except wal/, chunks_head/, and the lock file
+   rsync -a --exclude='wal' --exclude='chunks_head' --exclude='lock' <job_dir>/prometheus/ /tmp/prom_<jobid>_readonly/
+   utils/prometheus.sh view /tmp/prom_<jobid>_readonly -p <port> &
+   ```
+   This gives you access to all compacted data but **not** the most recent uncompacted samples still in the WAL. Expect a gap of up to 2 hours at the end of the data. For a long-running job, this is usually sufficient. Clean up with `rm -rf /tmp/prom_<jobid>_readonly` when done.
+
    **Case B — Finished job (completed, failed, or cancelled):** Start a read-only Prometheus against the persisted TSDB:
    ```bash
    utils/prometheus.sh view <job_dir>/prometheus -p <port> &
    ```
-   Use port 9190 by default; if occupied, try 9191, 9192, etc. Wait for "Open http://localhost:" in stdout (typically <3 seconds). Kill the process when done (step 7).
+   Use port 9190 by default. If it fails with `bind: address already in use`, check what's occupying it before blindly incrementing:
+   ```bash
+   ss -tlnp | grep 919
+   ```
+   If stale Prometheus processes from previous diagnosis sessions are occupying ports, kill them (`kill <pid>`) and reuse the port. Only increment (9191, 9192, ...) if the port is occupied by a legitimate process. Wait for "Open http://localhost:" in stdout (typically <3 seconds). Kill the process when done (step 8).
 
    **Case C — Multi-job comparison:** At least one job must have a Prometheus TSDB. Start a read-only Prometheus for each finished job that has one, each on a different port:
    ```bash
@@ -159,9 +172,13 @@ This skill requires a Prometheus TSDB, which is only available for `RAY=1` jobs.
 
 5. **Run the appropriate playbook** (see Diagnostic Playbooks below). Each playbook specifies the PromQL queries, how to interpret results, and what to conclude.
 
-6. **Report findings** in the structured format (see Output Format below).
+6. **Deepen the diagnosis if needed.** If the playbook identifies a suspicious metric but the root cause mechanism isn't clear:
+   - **Check ray worker logs** — look for NCCL init waves, XLA recompilations, or warnings that correlate with the metric anomaly. See the "Ray Worker Logs" section for patterns and locations.
+   - **Trace into source code** — when the anomaly is persistent, uniform across nodes, and not explained by hardware/network/thermal factors. See the "Trace suspicious findings to source code" diagnostic principle for the full methodology.
 
-7. **Cleanup.** Kill any read-only Prometheus instances you started in step 2:
+7. **Report findings** in the structured format (see Output Format below).
+
+8. **Cleanup.** Kill any read-only Prometheus instances you started in step 2:
    ```bash
    kill %1 2>/dev/null   # single instance
    kill %1 %2 2>/dev/null   # multi-job comparison
@@ -253,6 +270,24 @@ rate(hw_tcp_retransmits_total[5m])
 increase(hw_oom_kills_total[1h])
 ```
 
+## Ray Worker Logs
+
+Ray worker logs are the second source of truth alongside TSDB metrics. They contain NCCL/RCCL initialization messages, XLA compilation events, Python tracebacks, and framework-level warnings that the TSDB cannot capture. Use them to confirm hypotheses formed from metric analysis.
+
+**Location:** `<job_dir>/ray_logs/<hostname>/worker-*-<pid>-<pid>.out` (stdout) and `.err` (stderr). Each host has a subdirectory; each Ray worker has a pair of `.out`/`.err` files.
+
+**Common patterns to search for:**
+- `init.cc:2095 NCCL WARN MSCCL++` — NCCL communicator initialization. Count the number of "waves" (clusters of these messages separated by time gaps) to detect unexpected communicator creation (e.g., extra wave from single-replica restore broadcast).
+- `Compilation of` or `Compiled` — XLA compilation events. Unexpected recompilations mid-training indicate shape changes or cache misses.
+- `NCCL WARN` or `RCCL WARN` — collective communication warnings.
+- Python tracebacks — stack traces from exceptions (may be caught and logged without crashing).
+- `SingleReplicaArrayHandler` or `broadcast_one_replica_to_all` — checkpoint restore broadcast messages (relevant to RCCL leak diagnosis).
+
+**Practical tips:**
+- Worker logs can be very large. Use grep to search, don't read entire files.
+- The head node (task 0) typically has the most informative logs — start there.
+- When comparing two jobs, grep for the same pattern in both and diff the output (e.g., count NCCL init waves in each).
+
 ## Diagnostic Playbooks
 
 Each playbook is triggered by a specific scenario (from triage output or user request). Run the listed queries, apply the interpretation rules, and report findings.
@@ -279,6 +314,30 @@ Always query both domains. When system metrics (power, clocks, utilization) chan
 
 Always report the full chain: root cause → intermediate effects → observed symptoms. This is the core value of having all metrics in a single time-aligned TSDB.
 
+### Trace suspicious findings to source code
+
+Metrics tell you *what* is happening; source code tells you *why*. When the TSDB reveals an anomaly that can't be explained by external factors (network, hardware, thermal), trace the causal chain into the code to find the mechanism. This is especially valuable when the anomaly is persistent (not transient) and uniform across all nodes (not a single-node hardware issue) — these patterns point to a software-level root cause.
+
+**When to investigate code:**
+- A metric delta between two jobs with identical configs that isn't explained by hardware, network, or thermal differences (e.g., `hw_procs_running` is uniformly higher in one job).
+- A persistent anomaly that starts at a specific event (checkpoint restore, profiler activation, config change) and never recovers.
+- The TSDB points to a specific subsystem (checkpointing, data pipeline, collective communication) but the metric alone doesn't explain the mechanism.
+
+**How to trace:**
+1. **Start from the triggering event.** The triage report and metric timeline tell you *when* the anomaly starts. Identify what code executed at that point (e.g., checkpoint restore at step N, profiler hook at step M).
+2. **Follow the call chain.** Read the relevant MaxText entry point (e.g., `checkpointing.py:load_state_if_possible` for restore issues), then trace into the libraries it calls (Orbax, JAX, XLA). Use semantic search and grep to find the code paths.
+3. **Look for resource creation without cleanup.** The most common source of persistent anomalies is resources (communicators, threads, file handles, caches) that are created during a transient operation but never released. Check whether the code path creates anything that outlives the function call.
+4. **Check for alternative code paths.** Libraries often have multiple implementations of the same operation (e.g., dispatcher-based vs legacy path in Orbax). If one path leaks resources, the other may not — this informs the fix direction.
+5. **Verify with logs.** After forming a hypothesis from the code, confirm it in the job's logs (ray worker `.out` files, stderr). Look for initialization messages, warnings, or resource creation events that match the code path you identified.
+
+**Accessible code locations:**
+- MaxText source: `/workspace/maxtext/src/MaxText/` (checkpointing, training loop, configs)
+- Orbax (checkpoint library): `/opt/venv/lib/python3.12/site-packages/orbax/checkpoint/`
+- JAX: `/opt/venv/lib/python3.12/site-packages/jax/`
+- XLA C++ headers (for understanding communicator/backend behavior): search under `/opt/venv/` or use `python3 -c "import jaxlib; print(jaxlib.__path__)"` to locate
+
+**Example from real diagnosis:** TSDB showed `hw_procs_running` was ~4.6 higher per host in a restored job vs a fresh-start baseline. Code tracing revealed: MaxText `checkpointing.py` → Orbax `SingleReplicaArrayHandler.deserialize()` → `multislice.broadcast_one_replica_to_all()` → `_merge_globalized_replicas()` which uses `jax.jit(jnp.sum)` → XLA all-reduce collective → new RCCL communicators with unique `GpuCliqueKey` → cached permanently in C++ clique cache → background polling threads increase `hw_procs_running`. Without code tracing, the TSDB alone could only say "more processes are running" — the code trace identified the exact mechanism and pointed to a fix (use `jax.device_put` instead).
+
 ### Checkpointing interference
 
 Checkpointing is one of the most disruptive periodic events in training. During a checkpoint save, the system behavior changes dramatically — and many metrics that look anomalous are actually normal checkpoint effects. Always check whether an anomaly coincides with a checkpoint step before diagnosing it as a problem.
@@ -300,15 +359,28 @@ Checkpointing is one of the most disruptive periodic events in training. During 
 - When comparing metrics across jobs with different `checkpoint_period` values, normalize by excluding checkpoint steps from both.
 - Memory spikes during checkpoint saves are not OOM precursors unless they push the host to its limit. DP replica #0 nodes use ~2x model size in host RAM during saves — this is expected.
 
-**Single-replica checkpoint restore and RCCL resource leaks:**
+**Single-replica checkpoint restore and RCCL communicator leaks:**
 
-When `enable_single_replica_ckpt_restoring=true` and the job restores from a checkpoint, the restore code path leaks RCCL-related resources (threads, handles, or sub-processes). This manifests as a **persistent increase in `hw_procs_running`** (~3–8 extra processes per host) that appears immediately after restore and may creep upward over the job's lifetime. The leaked processes create constant CPU contention — competing with data pipeline threads, RCCL coordination, and the Python runtime — causing a persistent throughput (TGS) drop of ~0.5–1%.
+When `enable_single_replica_ckpt_restoring=true` and the job restores from a checkpoint, the restore code path leaks RCCL communicators and their background polling threads. This manifests as a **persistent increase in `hw_procs_running`** (~3–8 extra runnable processes per host) that appears immediately after restore and never recovers. The leaked threads create constant CPU contention — competing with data pipeline threads, RCCL coordination, and the Python runtime — causing a persistent throughput (TGS) drop of ~0.5–1%.
+
+**Root cause (code-level):** During single-replica restore, Orbax's `SingleReplicaArrayHandler` broadcasts the restored parameters from one replica to all others. The non-dispatcher code path in `orbax/.../multislice.py` (`_merge_globalized_replicas`) uses `jax.jit(lambda: jnp.sum(axis=0), out_shardings=...)` to perform this broadcast. The `jnp.sum` across the replica axis compiles to an **XLA all-reduce collective**, which causes RCCL to initialize new communicators via XLA's `AcquireGpuClique()`. Because the restore uses a different mesh/sharding configuration (single-replica subset mesh) than training, the resulting `GpuCliqueKey` is unique — so RCCL creates brand-new communicators instead of reusing the training ones. These communicators and their background polling threads are cached permanently in XLA's C++ GPU clique cache (`GpuCliqueKey → LockableGpuClique`).
+
+**Why cleanup attempts fail:**
+- `jax.clear_caches()` only clears Python-level JIT compilation caches. It does **not** touch the C++ communicator cache. Confirmed ineffective by testing.
+- `jax.clear_backends()` would clear communicators but tears down the entire JAX runtime — unusable mid-training.
+- There is no Python API to destroy individual RCCL communicators. The C++ clique cache has no eviction mechanism or public release API.
+- MaxText's `_restore_original_array_handler()` re-registers the original `ArrayHandler` but cannot affect the C++ communicator state.
+
+**Log-level confirmation:** The ray worker `.out` logs show an extra NCCL communicator initialization wave during restore. Look for `init.cc:2095 NCCL WARN MSCCL++` messages — a fresh-start job has 2 waves (startup + training), while a restored job has 3 waves (startup + **restore broadcast** + training). The extra wave corresponds to the `_merge_globalized_replicas` all-reduce creating new communicators.
+
+**Fix direction:** Orbax's dispatcher-based code path (`SingleReplicaArrayHandler.deserialize` with `self._dispatcher is not None`) already avoids this — it uses `jax.device_put` for the broadcast step instead of `jax.jit(jnp.sum)`, which performs device-to-device transfers without creating new RCCL communicators. The fix is to port this approach to the non-dispatcher path in `_merge_globalized_replicas`, or to enable the dispatcher path in MaxText.
 
 **How to detect:** When comparing a restored job against a fresh-start baseline with identical config:
 - Check `hw_procs_running` — a uniform delta across all hosts (not a spike, not on specific nodes) after restore is the signature.
 - The delta is present from the first training step after restore and does not recover.
 - Training-level metrics (loss, grad norms, LR) will be identical between the two jobs — this is purely system-level contention.
 - A fresh start with the same config but no actual restore (even if `enable_single_replica_ckpt_restoring=true`) does not trigger the leak — the restore code path must actually execute.
+- Check ray worker `.out` logs for the extra NCCL init wave (3 waves vs 2) as a definitive confirmation.
 
 ---
 
@@ -549,7 +621,7 @@ Anomalous GPUs: <list of host:gpu with any non-zero errors or outlier metrics>
 
 | Contention source | Metrics to check | What to look for |
 |--------------------|-----------------|------------------|
-| **CPU** | `hw_procs_running`, `hw_procs_blocked`, `hw_context_switches_total`, `ray_node_cpu_utilization`, `hw_gpu_user_processes` | High runnable count (oversubscribed), high blocked count (I/O wait), excessive context switching. **For multi-job comparison:** a constant but higher process count in one job creates a constant baseline CPU tax — extra processes compete with data pipeline threads, NCCL coordination, and Python runtime. This won't show as a spike but as a persistent throughput gap. Compare `hw_procs_running` across jobs, not just within a single job. **Known cause:** `enable_single_replica_ckpt_restoring=true` leaks RCCL resources on restore, adding ~3–8 procs/host (see "Checkpointing interference" section). |
+| **CPU** | `hw_procs_running`, `hw_procs_blocked`, `hw_context_switches_total`, `ray_node_cpu_utilization`, `hw_gpu_user_processes` | High runnable count (oversubscribed), high blocked count (I/O wait), excessive context switching. **For multi-job comparison:** a constant but higher process count in one job creates a constant baseline CPU tax — extra processes compete with data pipeline threads, NCCL coordination, and Python runtime. This won't show as a spike but as a persistent throughput gap. Compare `hw_procs_running` across jobs, not just within a single job. **Known cause:** `enable_single_replica_ckpt_restoring=true` leaks RCCL communicator polling threads on restore (~3–8 procs/host) because Orbax's `_merge_globalized_replicas` creates all-reduce collectives with unique `GpuCliqueKey`s cached permanently in XLA's C++ clique cache; `jax.clear_caches()` does not help (see "Checkpointing interference" section). |
 | **Network (TCP)** | `rate(hw_tcp_retransmits_total[5m])`, `rate(hw_tcp_estab_resets_total[5m])`, `rate(hw_tcp_abort_on_timeout_total[5m])` | Retransmit bursts slow NFS and gRPC; resets and aborts indicate connection failures |
 | **Network (RDMA)** | `rate(hw_rdma_tx_retx_pkts_total[5m])`, `rate(hw_rdma_tx_ack_timeout_total[5m])`, `rate(hw_rdma_rx_cnp_pkts_total[5m])` | RDMA retransmits slow NCCL/RCCL collectives; CNP indicates switch congestion |
 | **Storage I/O** | `hw_io_pressure_full_pct`, `hw_io_pressure_some_pct`, `hw_mem_dirty_bytes`, `hw_mem_writeback_bytes` | I/O pressure stalls data loading and checkpointing; dirty page buildup indicates NFS/storage backlog |
@@ -620,7 +692,23 @@ Even with identical `PASSTHROUGH_ARGS`, the runtime environment can differ: diff
 
 A throughput difference caused by a one-time network blip in job B is not a systematic issue. Use steady-state averages (skip warmup steps) and look at variance — a persistent gap indicates a real difference, while a spike indicates a transient event.
 
-### 6. Report structure for comparison
+### 6. Systematic metric sweep
+
+Run the **contention checklist** from Playbook 7 on both jobs at their overlapping step range. Compare each contention source side by side — CPU, network (TCP and RDMA), storage I/O, memory, GPU thermal, GPU hardware, and training-level metrics. The root cause is often a single metric family that differs between jobs while all others are identical.
+
+**Key metrics for multi-job TGS comparison:**
+- `hw_procs_running` — most common differentiator. A uniform delta across all hosts points to a software-level resource leak (see "Checkpointing interference"). A per-node delta points to background processes or different node allocations.
+- `tb_perf_per_device_tokens_per_sec` — the TGS metric itself. Compare steady-state averages and variance.
+- `tb_perf_step_time_seconds` — step time. Inverse of TGS but more sensitive to outliers (checkpoint saves, profiler hooks).
+- `rate(hw_tcp_retransmits_total[5m])` and `rate(hw_rdma_tx_retx_pkts_total[5m])` — network retransmits. If one job ran during a network event, this explains transient TGS dips.
+
+### 7. Deepen with logs and source code
+
+If the metric sweep identifies a suspicious delta but doesn't explain the mechanism:
+1. **Compare ray worker logs** between the two jobs — grep for NCCL init waves, XLA compilation events, or warnings and diff the counts.
+2. **Trace into source code** if the delta is persistent, uniform, and correlates with a specific event (e.g., checkpoint restore). Follow the "Trace suspicious findings to source code" principle.
+
+### 8. Report structure for comparison
 
 ```
 ## Multi-Job Comparison: <job_A> vs <job_B>
@@ -658,6 +746,8 @@ Hard-won lessons from real diagnosis sessions. Avoid these mistakes:
 6. **Comparing jobs without understanding their start conditions.** A job that restored from a checkpoint may have RCCL resource leaks, XLA recompilation overhead, or different data pipeline warmup compared to a fresh start. Always check whether a job is a fresh start or restore before comparing metrics.
 
 7. **Assuming host memory contention affects GPU training.** For GPU training, the GPU compute path is largely independent of host memory usage. A spike in host memory (e.g., from checkpoint saves) does not directly slow GPU computation unless it triggers OOM or swapping. Focus on CPU contention (`hw_procs_running`), network contention, and GPU-level metrics.
+
+8. **Assuming `jax.clear_caches()` cleans up RCCL communicators.** `jax.clear_caches()` only clears Python-level JIT compilation caches (traced in `jax/_src/api.py`). RCCL/NCCL communicators live in XLA's C++ GPU clique cache (`GpuCliqueKey → LockableGpuClique` in `xla/backends/gpu/collectives/gpu_cliques.h`), which has no eviction mechanism and no Python-accessible release API. The only way to destroy them is `jax.clear_backends()`, which tears down the entire JAX runtime and is unusable mid-training. When diagnosing RCCL resource leaks (e.g., from single-replica restore), do not recommend `jax.clear_caches()` — it has been tested and confirmed ineffective.
 
 ## Metric Reference
 
@@ -747,7 +837,7 @@ Complete catalog of metrics available in the TSDB. All metrics have a `host` lab
 ```
 ## TSDB Diagnosis: <job_dir>
 
-**Analysis type:** <hang | heartbeat | oom | hardware | gpu-health | network-health | training-stability>
+**Analysis type:** <hang | heartbeat | oom | hardware | gpu-health | network-health | training-stability | multi-job-comparison>
 **Time window:** <start_time> to <end_time> (<duration>)
 **Nodes:** <N> (<host1, host2, ...>)
 
@@ -765,6 +855,16 @@ Use the actual query results — do not fabricate data.>
 
 ### Anomalies detected
 <Any nodes/GPUs/metrics that deviate from cluster norm. "None" if all healthy.>
+
+### Log evidence (if applicable)
+<Ray worker log findings that confirm the metric-based hypothesis.
+E.g., "3 NCCL init waves in job 7882 vs 2 in job 7879, confirming extra
+communicator creation during checkpoint restore.">
+
+### Source code trace (if applicable)
+<Code-level root cause chain when the diagnosis traced into source code.
+E.g., "checkpointing.py → SingleReplicaArrayHandler → _merge_globalized_replicas
+→ jax.jit(jnp.sum) → XLA all-reduce → leaked RCCL communicators.">
 
 ### Correlation with triage
 <If triggered from a triage report, confirm or refute the failure hypothesis.

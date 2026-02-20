@@ -144,11 +144,14 @@ Training metrics (loss, learning rate, gradient norms, throughput) traditionally
 # Loss over time
 tb_learning_loss{host="node001"}
 
-# Correlate loss with GPU temperature
-tb_learning_loss{host="node001"} and on() hw_gpu_temperature_celsius{host="node001", gpu="0"}
+# Step time spikes — which steps took abnormally long?
+tb_perf_step_time_seconds > 2 * avg_over_time(tb_perf_step_time_seconds[30m])
 
-# Detect throughput regression (>10% drop from moving average)
-tb_perf_per_device_tokens_per_sec < 0.9 * avg_over_time(tb_perf_per_device_tokens_per_sec[10m])
+# At the same wall-clock time, check system-level contention sources:
+hw_gpu_temperature_celsius{host="node001"}            # Thermal throttling?
+rate(hw_tcp_retransmits_total{host="node001"}[5m])    # Network issues?
+hw_procs_running{host="node001"}                      # CPU contention?
+hw_io_pressure_full_pct{host="node001"}               # Storage stalls?
 ```
 
 **Anti-staleness fills.** During long idle periods (e.g. checkpoint saves), the plugin periodically re-emits the last known data to keep `tb_*` series alive in Prometheus. Use `tb_metrics_plugin_staleness_fill == 0` to exclude synthetic fills from analysis queries.

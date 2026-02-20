@@ -7,6 +7,8 @@ description: Analyze MaxText training job performance using tgs_tagger, TraceLen
 
 Post-training (or mid-training) analysis pipeline. Follow the workflow below from top to bottom.
 
+**Multi-job comparisons:** If comparing two or more jobs (e.g., "why is job B slower than job A?"), start with `skills/tsdb-diagnosis/SKILL.md` (Multi-Job Comparison workflow) **before** running TraceLens. The TSDB reveals system-level root causes — CPU contention from RCCL resource leaks, network errors, I/O pressure, thermal throttling — that TraceLens cannot observe (it only sees GPU-side kernel timings). Only proceed to TraceLens here if the TSDB comparison is inconclusive.
+
 ## Workflow
 
 ### Step 1: Run the dispatcher
