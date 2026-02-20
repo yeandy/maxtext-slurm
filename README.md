@@ -42,7 +42,7 @@ RAY=1 submit.sh 70b -N 8
 |-----------|--------------|------|
 | TensorBoard | Training loss curves, learning rate schedules | 6006 |
 | Ray Dashboard | Actor status, live stack traces, flame graphs | 8265 |
-| Prometheus | GPU, host, network, and training metrics — unified TSDB | 9090 |
+| Prometheus | GPU, host, network, and training metrics — unified TSDB | 9190 (auto-increments if occupied) |
 
 ### Post-run browsing
 

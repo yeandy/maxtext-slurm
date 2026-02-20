@@ -29,11 +29,11 @@
 # Examples:
 #   utils/prometheus.sh list                                                      # List jobs with metrics data
 #   utils/prometheus.sh list /shared/maxtext_jobs                                 # Custom workspace
-#   utils/prometheus.sh view outputs/12345-JAX-llama2-70b/prometheus              # Open Prometheus UI on :9090
-#   utils/prometheus.sh view outputs/12345-JAX-llama2-70b/prometheus -p 9091      # Custom port
+#   utils/prometheus.sh view outputs/12345-JAX-llama2-70b/prometheus              # Open Prometheus UI on :9190
+#   utils/prometheus.sh view outputs/12345-JAX-llama2-70b/prometheus -p 9191      # Custom port (if 9190 is occupied)
 ```
 
-This starts a read-only [Prometheus](https://prometheus.io/) instance (no scraping) serving the persisted TSDB data. Open `http://localhost:9090` (or your chosen port) to query and graph all metrics (GPU, host, network, training scalars, and [Ray](https://www.ray.io/)) that were collected during the run.
+This starts a read-only [Prometheus](https://prometheus.io/) instance (no scraping) serving the persisted TSDB data. Open `http://localhost:9190` (or your chosen `-p` port) to query and graph all metrics (GPU, host, network, training scalars, and [Ray](https://www.ray.io/)) that were collected during the run. During live jobs, the Prometheus port defaults to 9190 but auto-increments (9191, 9192, ...) if the port is already occupied — check the job log for the actual port.
 
 ## Send a Telegram message
 

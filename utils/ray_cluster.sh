@@ -21,7 +21,7 @@ export RAY_num_heartbeats_timeout=${RAY_num_heartbeats_timeout:-20}             
 # potentially occupied port.
 RAY_HEAD_IP="${JAX_COORDINATOR_IP:-localhost}"
 RAY_METRICS_PORT=55080
-PROMETHEUS_PORT=9090
+PROMETHEUS_PORT=9190
 
 # Persist Ray logs to the shared job output directory so they survive crashes.
 # Inside Docker, /outputs is mounted from $JOB_WORKSPACE
@@ -172,7 +172,14 @@ start_ray_cluster() {
     install_ray || return 1
     _install_pyspy_subprocess_wrapper
     ray stop --force &>/dev/null || true
-    pkill -f "prometheus" &>/dev/null || true
+    # Kill stale Prometheus from a prior run of THIS job (match the TSDB path).
+    # Avoid 'pkill -f prometheus' which would kill unrelated instances (e.g.,
+    # cluster-level monitors or other jobs' Prometheus).
+    if [[ -n "${JOB_DIR:-}" ]]; then
+        pkill -f "prometheus.*${JOB_DIR}/prometheus" &>/dev/null || true
+    else
+        pkill -f "prometheus.*storage.tsdb" &>/dev/null || true
+    fi
     pkill -f "metrics_exporter.sh" &>/dev/null || true
     pkill -f "node_hw_metrics.prom" &>/dev/null || true
     # Wait for ports to be released after SIGKILL
@@ -184,6 +191,8 @@ start_ray_cluster() {
     if [[ ${NODE_RANK:-0} -eq 0 ]]; then
         start_ray_head || return 1
         start_prometheus
+        # Re-export in case start_prometheus changed PROMETHEUS_PORT due to conflict
+        export RAY_PROMETHEUS_HOST="http://localhost:${PROMETHEUS_PORT}"
     else
         start_ray_worker
     fi
@@ -191,7 +200,11 @@ start_ray_cluster() {
 
 stop_ray_cluster() {
     ray stop --force &>/dev/null || true
-    pkill -f "prometheus" &>/dev/null || true
+    if [[ -n "${JOB_DIR:-}" ]]; then
+        pkill -f "prometheus.*${JOB_DIR}/prometheus" &>/dev/null || true
+    else
+        pkill -f "prometheus.*storage.tsdb" &>/dev/null || true
+    fi
     pkill -f "metrics_exporter.sh" &>/dev/null || true
     pkill -f "node_hw_metrics.prom" &>/dev/null || true
     pkill -f "tensorboard" &>/dev/null || true
@@ -220,10 +233,10 @@ print_ray_info() {
     cat <<EOF
 ==============================================
 SSH tunnel from your local machine (use hostname or IP, whichever works):
-  ssh -L 8265:${host}:8265 -L 6006:${host}:6006 -L 9090:${host}:9090 ${login_hostname}
-  ssh -L 8265:${host}:8265 -L 6006:${host}:6006 -L 9090:${host}:9090 ${login_ip}
+  ssh -L 8265:${host}:8265 -L 6006:${host}:6006 -L ${PROMETHEUS_PORT}:${host}:${PROMETHEUS_PORT} ${login_hostname}
+  ssh -L 8265:${host}:8265 -L 6006:${host}:6006 -L ${PROMETHEUS_PORT}:${host}:${PROMETHEUS_PORT} ${login_ip}
 
-Then open localhost:8265/6006/9090 in your browser:
+Then open in your browser:
   Ray Dashboard:  http://localhost:8265
   TensorBoard:    http://localhost:6006
   Prometheus:     http://localhost:${PROMETHEUS_PORT}
