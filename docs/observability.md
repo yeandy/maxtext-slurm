@@ -58,9 +58,14 @@ $JOB_WORKSPACE/
     artifact -> ...                           # Artifact at submit time
     log -> ../12345-JAX-llama2-70b.log        # Symlink to the job log
     prometheus/                               # Prometheus time-series data
+      prometheus.log                          # Prometheus process log (startup, errors, restarts)
     ray_logs/
       node001/session_*/logs/                 # Head node: raylet, GCS, dashboard, worker logs
       node002/session_*/logs/                 # Worker node logs
+      ...
+    metrics_exporter/                         # Metrics exporter logs (one per node)
+      node001.log
+      node002.log
       ...
     core.12345.*.node002.py_xla_execute.515   # Core dumps (if any)
     <training outputs>
