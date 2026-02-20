@@ -46,6 +46,43 @@ _persist_ray_logs() {
 
 export RAY_PROMETHEUS_HOST="http://localhost:${PROMETHEUS_PORT}"
 
+# Generic watchdog: launch a command in a background subshell and restart on crash.
+# Usage: _run_with_watchdog <label> <log_file> [--on-restart <cmd>] -- <command> [args...]
+#   - The command is launched INSIDE the subshell so wait() always operates on a
+#     direct child (launching outside would make wait() return 127 immediately).
+#   - On non-zero exit: log, run on-restart hook, sleep 5s, restart.
+#   - On clean exit (0) or signal death (SIGTERM=143, SIGINT=130): stop.
+#   - Gives up after 50 restarts.
+_run_with_watchdog() {
+    local label="$1"; shift
+    local log_file="$1"; shift
+    local on_restart=""
+    if [[ "${1:-}" == "--on-restart" ]]; then
+        shift; on_restart="$1"; shift
+    fi
+    [[ "${1:-}" == "--" ]] && shift
+
+    (
+        local restarts=0
+        while true; do
+            "$@" >>"$log_file" 2>&1 &
+            local pid=$!
+            wait "$pid" 2>/dev/null
+            local exit_code=$?
+            # exit 0 = clean shutdown; 143 = SIGTERM; 130 = SIGINT (job teardown)
+            [[ $exit_code -eq 0 || $exit_code -eq 143 || $exit_code -eq 130 ]] && break
+            restarts=$((restarts + 1))
+            if [[ $restarts -gt 50 ]]; then
+                echo "[$(date -u +%FT%TZ)] [$label] Watchdog: too many restarts (50), giving up" >>"$log_file"
+                break
+            fi
+            echo "[$(date -u +%FT%TZ)] [$label] Watchdog: exited with code $exit_code, restart #$restarts" >>"$log_file"
+            [[ -n "$on_restart" ]] && eval "$on_restart"
+            sleep 5
+        done
+    ) &
+}
+
 # Prometheus helpers (install_prometheus, start_prometheus, view_prometheus, …)
 source "$(dirname "${BASH_SOURCE[0]}")/prometheus.sh"
 
@@ -54,9 +91,11 @@ _METRICS_EXPORTER_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/metrics_exporter.sh"
 
 start_metrics_exporter() {
     if [[ -x "$_METRICS_EXPORTER_SCRIPT" ]]; then
-        local log_file="/tmp/metrics_exporter.log"
-        "$_METRICS_EXPORTER_SCRIPT" --port "${EXPORTER_PORT:-9400}" --interval 10 \
-            >>"$log_file" 2>&1 &
+        local log_dir="/outputs/${JOB_DIR:-unknown}/metrics_exporter"
+        local log_file="$log_dir/$(hostname -s).log"
+        mkdir -p "$log_dir" 2>/dev/null || log_file="/tmp/metrics_exporter.log"
+        _run_with_watchdog "Metrics Exporter" "$log_file" -- \
+            "$_METRICS_EXPORTER_SCRIPT" --port "${EXPORTER_PORT:-9400}" --interval 10
         echo "[Metrics Exporter] Started on port ${EXPORTER_PORT:-9400} on $(hostname -s) (log: $log_file)"
     else
         echo "[Metrics Exporter] Script not found: $_METRICS_EXPORTER_SCRIPT" >&2

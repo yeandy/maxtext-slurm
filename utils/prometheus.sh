@@ -52,6 +52,10 @@ _prom_bin() {
 }
 
 # Start Prometheus with live scraping (called inside a running job).
+# Uses the generic _run_with_watchdog (from ray_cluster.sh) to restart on crash.
+# On restart Prometheus replays the WAL and resumes scraping — only a few seconds
+# of data are lost.  Logs go to $PROMETHEUS_DATA_DIR/prometheus.log so they
+# survive job termination and appear in the job directory for diagnosis.
 start_prometheus() {
     install_prometheus || return 0
 
@@ -87,50 +91,55 @@ scrape_configs:
       - targets: [${hw_targets}]
 EOF
 
-    # Write TSDB directly to persistent storage.  Inside Docker, /outputs is
-    # mounted from $JOB_WORKSPACE (or $SCRIPT_DIR/outputs) on the host.  This
-    # way metrics survive even if the job is killed abruptly (preemption, OOM, etc.).
     PROMETHEUS_DATA_DIR="/outputs/${JOB_DIR:-unknown}/prometheus"
     mkdir -p "$PROMETHEUS_DATA_DIR"
+    local prom_log="$PROMETHEUS_DATA_DIR/prometheus.log"
 
-    local prom_log
-    prom_log=$(mktemp /tmp/prom_start_XXXXXX.log)
+    # Common flags (reused for port discovery and the watchdog launch).
+    local -a prom_flags=(
+        --config.file=/tmp/ray_prometheus.yml
+        --storage.tsdb.path="$PROMETHEUS_DATA_DIR"
+        --storage.tsdb.retention.time=30d
+    )
 
+    # --- Probe for a usable port (launch briefly, check, kill) ---
     local actual_port="$PROMETHEUS_PORT"
     local max_retries=5
     local prom_pid
     for ((attempt = 0; attempt <= max_retries; attempt++)); do
-        "$prom_bin" --config.file=/tmp/ray_prometheus.yml \
-            --web.listen-address=":${actual_port}" \
-            --storage.tsdb.path="$PROMETHEUS_DATA_DIR" \
-            --storage.tsdb.retention.time=30d >"$prom_log" 2>&1 &
+        "$prom_bin" "${prom_flags[@]}" \
+            --web.listen-address=":${actual_port}" >>"$prom_log" 2>&1 &
         prom_pid=$!
-        # Prometheus exits immediately on port-bind failure; wait then check.
         sleep 2
         if kill -0 "$prom_pid" 2>/dev/null; then
             break
         fi
-        # Process exited — port likely occupied
         if [[ $attempt -lt $max_retries ]]; then
             actual_port=$((actual_port + 1))
             echo "[Prometheus] Port $((actual_port - 1)) occupied, trying ${actual_port}..."
         else
             echo "[Prometheus] FAILED: could not bind any port in range ${PROMETHEUS_PORT}-${actual_port}" >&2
-            cat "$prom_log" >&2
-            rm -f "$prom_log"
-            # Clean up the TSDB directory so an empty dir doesn't mislead diagnosis tools.
+            tail -20 "$prom_log" >&2
             rm -rf "$PROMETHEUS_DATA_DIR"
             return 1
         fi
     done
-    rm -f "$prom_log"
+    kill "$prom_pid" 2>/dev/null; wait "$prom_pid" 2>/dev/null || true
+    rm -f "$PROMETHEUS_DATA_DIR/lock"
 
     if [[ "$actual_port" != "$PROMETHEUS_PORT" ]]; then
         echo "[Prometheus] WARNING: port ${PROMETHEUS_PORT} was occupied; using ${actual_port} instead"
         PROMETHEUS_PORT="$actual_port"
     fi
-    echo "[Prometheus] Started on port ${actual_port} (pid ${prom_pid}; ray: ${ray_targets}; node_hw: ${hw_targets})"
+    echo "[Prometheus] Started on port ${actual_port} (ray: ${ray_targets}; node_hw: ${hw_targets})"
     echo "[Prometheus] TSDB -> ${PROMETHEUS_DATA_DIR} (persistent)"
+    echo "[Prometheus] Log  -> ${prom_log}"
+
+    # Watchdog restarts Prometheus on crash. The --on-restart hook removes the
+    # stale TSDB lock file (safe — the old process is dead).
+    _run_with_watchdog "Prometheus" "$prom_log" \
+        --on-restart "rm -f '$PROMETHEUS_DATA_DIR/lock'" -- \
+        "$prom_bin" "${prom_flags[@]}" --web.listen-address=":${actual_port}"
 }
 
 # Start a read-only Prometheus against persisted TSDB data.
