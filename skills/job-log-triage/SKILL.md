@@ -64,8 +64,8 @@ Classify a job's status and failure mode from its log file and recommend targete
 
    Include these projections in the report — they make stalls obvious (expected step 2000 but last step is 316 = hung for hours) and quantify the cost of the failure.
 
-6. **For `RAY=1` jobs:** Search the log for the SSH tunnel command (look for `ssh -L` near the start of training). Extract it and include it in the report.
-   - **Job still live** (running or hanging): ask the user if they want you to set up port forwarding to access the Ray Dashboard (8265), TensorBoard (6006), and Prometheus (9090).
+6. **For `RAY=1` jobs:** Search the log for the SSH tunnel command (look for `ssh -L` near the start of training). Extract the head node hostname and Prometheus port from the tunnel command (e.g., `ssh -L ...:HOST:PORT`; the port defaults to 9190 but may differ). Include the tunnel command, hostname, and port in the report.
+   - **Job still live** (running or hanging): the live Prometheus is at `http://<head_host>:<port>` — query it directly from the head node's network. The port defaults to 9190 but may auto-increment if occupied; check the log for the actual port (look for `[Prometheus] Started on port` or the SSH tunnel command). Do **not** use `localhost:9090`, which may be a different Prometheus (e.g., cluster-level monitor). The SSH tunnel command in the log is for the **user's laptop** to reach the head node through a jump host — it binds ports on the user's local machine, not on the head node. Ask the user if they want you to set up port forwarding to access the Ray Dashboard (8265), TensorBoard (6006), and Prometheus on their local machine.
    - **Job already ended** (completed, failed, or cancelled): live dashboards are gone — do not attempt to query them. For post-hoc analysis, use `utils/prometheus.sh view <job_dir>/prometheus` to start a read-only Prometheus against the persisted TSDB. If you gathered evidence from live queries earlier in the conversation, include those results.
 
 7. **Report findings** in the structured format described in "Output format" below.

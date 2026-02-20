@@ -11,7 +11,7 @@
 #   utils/prometheus.sh install
 #   utils/prometheus.sh list [<workspace>]
 
-PROMETHEUS_PORT=${PROMETHEUS_PORT:-9090}
+PROMETHEUS_PORT=${PROMETHEUS_PORT:-9190}
 RAY_METRICS_PORT=${RAY_METRICS_PORT:-55080}
 EXPORTER_PORT=${EXPORTER_PORT:-9400}
 
@@ -93,11 +93,43 @@ EOF
     PROMETHEUS_DATA_DIR="/outputs/${JOB_DIR:-unknown}/prometheus"
     mkdir -p "$PROMETHEUS_DATA_DIR"
 
-    "$prom_bin" --config.file=/tmp/ray_prometheus.yml \
-        --web.listen-address=":${PROMETHEUS_PORT}" \
-        --storage.tsdb.path="$PROMETHEUS_DATA_DIR" \
-        --storage.tsdb.retention.time=30d &>/dev/null &
-    echo "[Prometheus] Started on port ${PROMETHEUS_PORT} (ray: ${ray_targets}; node_hw: ${hw_targets})"
+    local prom_log
+    prom_log=$(mktemp /tmp/prom_start_XXXXXX.log)
+
+    local actual_port="$PROMETHEUS_PORT"
+    local max_retries=5
+    local prom_pid
+    for ((attempt = 0; attempt <= max_retries; attempt++)); do
+        "$prom_bin" --config.file=/tmp/ray_prometheus.yml \
+            --web.listen-address=":${actual_port}" \
+            --storage.tsdb.path="$PROMETHEUS_DATA_DIR" \
+            --storage.tsdb.retention.time=30d >"$prom_log" 2>&1 &
+        prom_pid=$!
+        # Prometheus exits immediately on port-bind failure; wait then check.
+        sleep 2
+        if kill -0 "$prom_pid" 2>/dev/null; then
+            break
+        fi
+        # Process exited — port likely occupied
+        if [[ $attempt -lt $max_retries ]]; then
+            actual_port=$((actual_port + 1))
+            echo "[Prometheus] Port $((actual_port - 1)) occupied, trying ${actual_port}..."
+        else
+            echo "[Prometheus] FAILED: could not bind any port in range ${PROMETHEUS_PORT}-${actual_port}" >&2
+            cat "$prom_log" >&2
+            rm -f "$prom_log"
+            # Clean up the TSDB directory so an empty dir doesn't mislead diagnosis tools.
+            rm -rf "$PROMETHEUS_DATA_DIR"
+            return 1
+        fi
+    done
+    rm -f "$prom_log"
+
+    if [[ "$actual_port" != "$PROMETHEUS_PORT" ]]; then
+        echo "[Prometheus] WARNING: port ${PROMETHEUS_PORT} was occupied; using ${actual_port} instead"
+        PROMETHEUS_PORT="$actual_port"
+    fi
+    echo "[Prometheus] Started on port ${actual_port} (pid ${prom_pid}; ray: ${ray_targets}; node_hw: ${hw_targets})"
     echo "[Prometheus] TSDB -> ${PROMETHEUS_DATA_DIR} (persistent)"
 }
 

@@ -27,21 +27,23 @@ Three dashboards are accessible via SSH tunnel while the job runs:
 | Dashboard | What it shows | Port |
 |-----------|--------------|------|
 | [Ray](https://www.ray.io/) Dashboard | Actor status, live stack traces, flame graphs | 8265 |
-| Prometheus | GPU thermals/power/clocks/VRAM, RAS errors, TCP retransmits, RDMA counters, training scalars (loss, LR, grad norms, throughput) | 9090 |
+| Prometheus | GPU thermals/power/clocks/VRAM, RAS errors, TCP retransmits, RDMA counters, training scalars (loss, LR, grad norms, throughput) | 9190 (auto-increments if occupied) |
 | TensorBoard | Training loss curves, learning rate schedules | 6006 |
 
 ### SSH tunnel
 
-The job output prints SSH tunnel instructions (both hostname and IP). Example:
+The job output prints SSH tunnel instructions (both hostname and IP). The Prometheus port defaults to 9190 but auto-increments if occupied (check the log for the actual port). Example:
 
 ```
 SSH tunnel (hostname):
-  ssh -L 8265:node001:8265 -L 6006:node001:6006 -L 9090:node001:9090 root@login01
+  ssh -L 8265:node001:8265 -L 6006:node001:6006 -L 9190:node001:9190 root@login01
 SSH tunnel (IP):
-  ssh -L 8265:node001:8265 -L 6006:node001:6006 -L 9090:node001:9090 root@203.0.113.10
+  ssh -L 8265:node001:8265 -L 6006:node001:6006 -L 9190:node001:9190 root@203.0.113.10
 ```
 
-Then open `http://localhost:8265`, `http://localhost:6006`, or `http://localhost:9090`.
+Then open `http://localhost:8265`, `http://localhost:6006`, or `http://localhost:9190` in your browser.
+
+**Important:** The SSH tunnel binds these ports on your **local machine** (where you run the `ssh` command). The remote head node (`node001` in this example) already has Prometheus listening. If you need to query from another cluster node, use `http://node001:9190` directly — do not assume `localhost:9190` on that node points to the job's Prometheus.
 
 If a port is occupied locally (e.g., monitoring multiple jobs), change the first port number in `-L`. For example, `-L 18265:node001:8265` then access `http://localhost:18265`.
 
