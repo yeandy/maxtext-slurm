@@ -155,6 +155,22 @@ When a job is still RUNNING in Slurm but training has stalled:
 
 4. **Recommended fix:** Increase `jax_distributed_heartbeat_timeout_seconds` to several hours (e.g., 14400 for a 4-hour timeout) so the broken mechanism cannot kill productive training. Use `slurm_job_monitor.sh` for independent hang detection instead of relying on heartbeats. See the postmortem's "Practical Workarounds" section for the full defense-in-depth strategy.
 
+## GPU OOM diagnosis
+
+When `RESOURCE_EXHAUSTED: Out of memory while trying to allocate` appears:
+
+1. **Check `XLA_PYTHON_CLIENT_MEM_FRACTION` first.** This is the most common cause of GPU OOM on large models — not wrong parallelism or batch size. Find the value in the log header (env var dump) or `train_env.sh`. The default is `.85`, which works for most models but is **too low for 405B-class models**. Increasing to `.93` is often the complete fix. See `docs/job-submission.md` ("Per-run overrides" section) for documented examples of this exact failure and fix.
+
+2. **Do NOT jump to parallelism changes.** A 405B model running on 8 nodes with `ici_fsdp_parallelism=-1` and `ici_tensor_parallelism=1` is a valid, tested configuration — it works correctly once the memory fraction is right. The OOM error message ("Out of memory while trying to allocate 221.71GiB") can be misleading: it does not mean the model fundamentally doesn't fit, just that JAX wasn't given enough of the GPU's physical memory.
+
+3. **Verify the fix worked.** If a subsequent job with the same config but higher `XLA_PYTHON_CLIENT_MEM_FRACTION` succeeds, confirm this was the root cause. Ask the user if a follow-up job is running successfully.
+
+4. **Only if memory fraction is already `.93`+**, fall back to the standard OOM playbook:
+   - Reduce `per_device_batch_size` or `max_target_length`
+   - Try `remat_policy=full` (if not already set)
+   - Reduce `XLA_PYTHON_CLIENT_MEM_FRACTION` if RCCL/NCCL buffer allocation errors appear (too high)
+   - The sweet spot is typically `.85`–`.93`; above `.93` risks starving RCCL/NCCL of communication buffer memory
+
 ## Diagnosing "unknown-death" (no JOB SUMMARY)
 
 When a job has no JOB SUMMARY and is no longer running:
@@ -232,7 +248,7 @@ Report findings in this structure:
 | **hang** | 1. If `RAY=1` and job is still live: check Ray Dashboard (port 8265) for actor status and stack traces to confirm RCCL hang and identify the stuck collective. 2. Query Prometheus TSDB at hang time for GPU util, TCP retransmits, RDMA counters. 3. Kill the job: `scancel <id>`. 4. On resubmit: add `_env_NCCL_DEBUG=INFO` and use `slurm_job_monitor.sh -j <id>` for early detection. |
 | **heartbeat-timeout** | 1. Known bug — almost certainly a false positive (see `docs/jax-heartbeat-false-positive-postmortem.md`). 2. Increase `jax_distributed_heartbeat_timeout_seconds` to several hours (e.g., 14400). 3. Use `slurm_job_monitor.sh` for independent hang detection. 4. Follow the heartbeat diagnosis checklist above to confirm. |
 | **oom-host** | 1. Reduce `per_device_batch_size`. 2. Enable `remat_policy=full`. 3. Check for checkpoint memory spike (DP replica #0 pattern). |
-| **oom-gpu** | 1. Reduce `per_device_batch_size` or `max_target_length`. 2. Try `remat_policy=full`. 3. Check XLA buffer assignment for memory usage. |
+| **oom-gpu** | **First check `XLA_PYTHON_CLIENT_MEM_FRACTION`** — see GPU OOM diagnosis below. If the fraction is too low for the model size, increase it (e.g., `.85` → `.93`). Only after ruling that out: 1. Reduce `per_device_batch_size` or `max_target_length`. 2. Try `remat_policy=full`. 3. Check XLA buffer assignment for memory usage. |
 | **nccl-timeout** | 1. Check network health (`ip link`, `ethtool`, RDMA counters). 2. Run with `_env_NCCL_DEBUG=INFO` for detailed NCCL logs. 3. Check if specific nodes are consistently failing. |
 | **xla-compile-fail** | 1. Check XLA flags in `train_env.sh` for conflicting settings. 2. Try `_env_ENABLE_XLA_DUMP=1` to capture the failing HLO. 3. Reduce model complexity to isolate the issue. |
 | **python-exception** | 1. Read the full traceback. 2. Check if it's a known MaxText issue. 3. Verify config parameters. |
