@@ -38,13 +38,15 @@ Classify a job's status and failure mode from its log file and recommend targete
 
    **Do not rely on log mtime to detect hangs or determine if a job is running.** A hung job can produce non-training output (Ray buffered C++ messages, system warnings, topology logs) that updates the file mtime without advancing training. The reliable indicator is whether the **last `completed step:` line** is recent. Use the training progress projection (step 5) to compare the last step against where training should be.
 
+   **`RAY=1` Slurm log truncation.** For `RAY=1` jobs, the Slurm log may show **fewer training steps than actually completed**. Ray actors write output to internal buffers that are forwarded asynchronously to the driver's stdout (which becomes the Slurm log). When the job finishes, remaining buffered output may not flush before the process exits. **Always cross-check the Slurm log's last step against `ray_logs/<head_node>/worker*.out`** — these files are written directly by the actor and contain the authoritative training progress. A job that appears to have stopped at step 33 in the Slurm log may have actually completed all 100 steps per the worker log. Failure to check this can cause misclassification (e.g., labeling a completed job as "unknown-death").
+
    To distinguish a hang from a death when there is no JOB SUMMARY: check Slurm job state (`scontrol show job <id>`) if the Slurm ID is known. If the job is still RUNNING, it's a hang. If the job has ended, it's an unknown-death.
 
 4. **Classify the failure** by scanning the log for signatures in the table below. Scan bottom-up — the most diagnostic error is usually near the end.
 
 5. **Project training progress.** Steps are **0-indexed**: `completed step: N` means step N is done, and `steps=T` in config means the job runs steps 0 through T-1 (T steps total). A job is complete when `last_step == T - 1`.
 
-   Parse from the log:
+   Parse from the log (and from `ray_logs` for `RAY=1` jobs — the Slurm log may be truncated; see the `RAY=1` truncation warning in step 3):
    - **Step time:** extract the `seconds:` field from recent `completed step:` lines (use the steady-state average, skip warmup steps 0–4 relative to the first step).
    - **Total steps:** from `steps=N` in `PASSTHROUGH_ARGS` (log header). The final step number will be N-1.
    - **Checkpoint period:** from `Config param checkpoint_period: N` lines in the log (printed by MaxText during config dump). If `enable_checkpointing=true` is in `PASSTHROUGH_ARGS` but no explicit period, the default is 200.

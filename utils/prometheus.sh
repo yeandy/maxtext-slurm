@@ -173,8 +173,8 @@ view_prometheus() {
     prom_bin=$(_prom_bin) || return 1
 
     # Minimal config — no scraping, just serve the existing data.
-    local cfg
-    cfg=$(mktemp /tmp/prom_view_XXXXXX.yml)
+    # Deterministic path (keyed on port) so it's reused, not accumulated.
+    local cfg="/tmp/prom_view_${port}.yml"
     cat > "$cfg" <<'YAML'
 global:
   scrape_interval: 999h
@@ -192,12 +192,13 @@ YAML
     echo "[Prometheus] If running on a remote host, tunnel first (use hostname or IP, whichever works):"
     echo "  ssh -L ${port}:localhost:${port} ${host_hostname}"
     echo "  ssh -L ${port}:localhost:${port} ${host_ip}"
-    "$prom_bin" --config.file="$cfg" \
+    # exec replaces bash with prometheus — one fewer process, and killing the
+    # PID targets prometheus directly instead of orphaning it as a child.
+    exec "$prom_bin" --config.file="$cfg" \
         --web.listen-address=":${port}" \
         --storage.tsdb.path="$data_dir" \
         --storage.tsdb.retention.time=10y \
         --query.lookback-delta=15m
-    rm -f "$cfg" 2>/dev/null
 }
 
 # List job directories that contain Prometheus data.
