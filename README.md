@@ -4,7 +4,7 @@ Toolkit for launching and observing [MaxText](https://github.com/AI-Hypercompute
 
 An extensible [AI skill framework](skills/) equips AI assistants with out-of-the-box domain expertise across the full training lifecycle — from profiling and performance analysis to production incident diagnosis — with more skills added over time.
 
-This is a **reference implementation** of a [layered](docs/architecture.md) launch architecture where each tier — orchestration, container, training, and even GPU vendor — can be [adapted independently](docs/extensibility.md) without cascading changes. See [Architecture](docs/architecture.md) for the full training flow and [Extensibility](docs/extensibility.md) for what each swap involves.
+This is a **reference implementation** of a [layered](docs/architecture.md) launch architecture where each tier — orchestration, container, training — can be [adapted independently](docs/extensibility.md) without cascading changes, including swapping the GPU vendor. See [Architecture](docs/architecture.md) for the full training flow and [Extensibility](docs/extensibility.md) for what each swap involves.
 
 ## Quickstart
 
@@ -63,7 +63,7 @@ See [Observability](docs/observability.md) for the full story.
 
 ## AI-assisted workflows
 
-The `skills/` directory contains structured instructions for AI coding assistants ([Cursor](https://cursor.com/), [Claude Code](https://docs.anthropic.com/en/docs/claude-code)). See [`skills/README.md`](skills/README.md) for the full list.
+The [`skills/`](skills/) directory contains structured diagnostic instructions for AI coding assistants ([Cursor](https://cursor.com/), [Claude Code](https://docs.anthropic.com/en/docs/claude-code)). Each skill encodes the methodology from very senior systems engineers — not just what commands to run, but how to interpret results, distinguish symptoms from root causes, and trace causal chains across the full stack. Skills ship for performance analysis, job failure triage, and TSDB-based incident diagnosis. See [`skills/README.md`](skills/README.md) for the full list.
 
 ## Learn more
 

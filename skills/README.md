@@ -1,6 +1,6 @@
 # AI Skills
 
-Structured instructions for AI coding assistants. Each skill is a self-contained guide that the agent reads on demand when the user's request matches its trigger keywords.
+Structured diagnostic instructions for AI coding assistants. Each skill encodes the methodology from very senior systems engineers — not just what commands to run, but how to interpret results, distinguish symptoms from root causes, and trace causal chains across the full stack. The agent reads the relevant skill on demand when the user's request matches its trigger keywords.
 
 ## Available skills
 

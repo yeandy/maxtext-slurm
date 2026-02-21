@@ -37,7 +37,7 @@ _job.sbatch                         │                         │
                            MaxText.train.main()
 ```
 
-`run_local.sh` with a model name verifies GPU availability first; with no args it drops into an interactive shell. `in_container_run.sh` provides the same interface for use inside the container (skips the Docker launch). All three entry points share argument parsing via `utils/parse_job_args.sh`; the two `run` scripts additionally share environment setup, logging, and job summary via `utils/run_setup.sh`. See [Job Submission](job-submission.md) for usage.
+`run_local.sh` with a model name verifies GPU availability first; with no args it drops into an interactive shell. `in_container_run.sh` provides the same interface for use inside the container (skips the [Docker](https://www.docker.com/) launch). All three entry points share argument parsing via `utils/parse_job_args.sh`; the two `run` scripts additionally share environment setup, logging, and job summary via `utils/run_setup.sh`. See [Job Submission](job-submission.md) for usage.
 
 `mfu_tracker` auto-detects GPU + dtype and wraps stdout/stderr to append `MFU: X.XX%` to TFLOP/s/device log lines.
 
