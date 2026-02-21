@@ -64,4 +64,5 @@ async_checkpointing: False
 # ── Dataset ──────────────────────────────────────────────────────────────────
 dataset_type: hf 
 hf_path: "allenai/c4" 
-hf_data_dir: 'en' 
+hf_data_dir: 'en'
+tokenizer_path: "meta-llama/Llama-2-7b-hf"
