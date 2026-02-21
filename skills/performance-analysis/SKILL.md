@@ -164,6 +164,10 @@ TraceLens_generate_perf_report_jax \
     --output_csvs_dir <output_dir>/csvs
 ```
 
+### `RAY=1` Slurm log truncation
+
+For `RAY=1` jobs, the Slurm log may contain **fewer training steps than actually completed** due to Ray output buffering (actor stdout is forwarded asynchronously to the driver, and unflushed output is lost when the job exits). If the analysis shows suspiciously few steps (e.g., 34 out of 100) with no error or JOB SUMMARY, check `ray_logs/<head_node>/worker*.out` in the job directory for the authoritative step count. The `analysis.json` TGS/MFU metrics will be based only on what appears in the Slurm log and may undercount the actual run.
+
 ### Running jobs
 
 - The dispatcher detects running jobs via the `JOB SUMMARY` log marker and file modification time (15 min threshold).
