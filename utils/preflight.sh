@@ -57,7 +57,7 @@ if [[ "$_nnodes" -le 1 ]]; then
     echo "$HOST | [NETWORK_CHECKS] skipped (single-node job)"
 else
     # ---- IPv6 routing rules check ----
-    # Vultr-specific: each NIC needs an fd-prefix IPv6 policy routing rule.
+    # Each NIC needs an fd-prefix IPv6 policy routing rule.
     # Missing rules cause "ionic_comp_msn: cqe with error 12".
     # Skip on IPv4-only clusters.
     EXPECTED_IPV6_FD_RULES=${EXPECTED_IPV6_FD_RULES:-8}
