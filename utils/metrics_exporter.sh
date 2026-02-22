@@ -100,10 +100,32 @@ collect_metrics() {
         # _PLUGIN_STATE (singular) is the scalar exported to child processes.
         export _PLUGIN_STATE="${_PLUGIN_STATES[$plugin_name]:-}"
 
-        # Run plugin — capture output and exit code.
-        # No "set -e", so non-zero exit codes don't abort the exporter.
-        raw_output=$(bash "$plugin" "$HOSTNAME_SHORT" 2>>/tmp/metrics_exporter.log)
-        plugin_rc=$?
+        # Run plugin with timeout — prevents a hung plugin (e.g. D-state
+        # sysfs read) from blocking the entire collection cycle.
+        local _tmpout
+        _tmpout=$(mktemp /tmp/plugin_XXXXXX.out 2>/dev/null) || _tmpout="/tmp/plugin_${plugin_name}.out"
+        bash "$plugin" "$HOSTNAME_SHORT" >"$_tmpout" 2>>/tmp/metrics_exporter.log &
+        local _child=$!
+        local _deadline=$(( SECONDS + POLL_INTERVAL ))
+        while kill -0 "$_child" 2>/dev/null && [[ $SECONDS -lt $_deadline ]]; do
+            sleep 1
+        done
+        if kill -0 "$_child" 2>/dev/null; then
+            # Kill child processes first (e.g. Python child of bash wrapper)
+            # to prevent orphaned grandchildren accumulating on each timeout.
+            local _grandchildren
+            _grandchildren=$(pgrep -P "$_child" 2>/dev/null)
+            kill -9 "$_child" $_grandchildren 2>/dev/null
+            wait "$_child" 2>/dev/null
+            plugin_rc=124
+            echo "[metrics_exporter] ${plugin_name} timed out after ${POLL_INTERVAL}s" \
+                >>/tmp/metrics_exporter.log
+        else
+            wait "$_child" 2>/dev/null
+            plugin_rc=$?
+        fi
+        raw_output=$(cat "$_tmpout" 2>/dev/null)
+        rm -f "$_tmpout"
 
         # Exit code 99: permanent skip — never invoke this plugin again.
         # This is a separate signal from stdout / state, so normal plugins
