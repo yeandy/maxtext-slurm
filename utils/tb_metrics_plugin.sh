@@ -76,24 +76,25 @@
 #        new step is emitted, it's placed at its real recording time,
 #        giving dashboards a smooth, correctly-timed curve.
 #
-#   Three invariants govern fill vs. drip:
-#     a. Real events (staleness_fill=0) always use their own wall_time
-#        — no clamping, no modification, ever.  This ensures the
-#        timeline pace accurately reflects real training data.
-#        Consequence: after a long checkpoint, a few pre-checkpoint
-#        steps whose wall_times are earlier than the last fill's
-#        timestamp may be silently rejected by Prometheus (the TSDB's
-#        out_of_order_time_window = 0).  This data loss is accepted
-#        under Rule c (best-effort).
-#     b. Fills (staleness_fill=1) must preserve timeline integrity.
+#   Four rules govern timestamp handling:
+#     1. Real events (staleness_fill=0) always retain their original
+#        wall_time — no clamping, no modification.  This ensures the
+#        timeline pace accurately reflects real data.
+#     2. Fills (staleness_fill=1) must preserve timeline integrity.
 #        They must never insert older samples after newer ones — the
 #        fill-safe guard checks this before every fill and skips it
 #        if the fill's timestamp would follow a pending real step.
-#        Fill timestamps are anchored to the Prometheus timeline
-#        (last emitted custom timestamp + interval), not server time,
-#        to minimise the gap with pre-checkpoint wall_times.
-#     c. When drip can't keep up (best-effort), real data has higher
-#        priority; fills are skipped.
+#        Fill timestamps are clamped to guarantee monotonicity
+#        (> _last_prom_ts_ms) and freshness (>= now - MAX_STALENESS)
+#        so Prometheus always accepts them.
+#     3. In best-effort scenarios, real data always takes precedence.
+#        Staleness fill-up events may be dropped if the drip
+#        mechanism cannot keep up.
+#     4. If real data cannot be dripped timely, drop older data.
+#        Before emitting, steps whose wall_time has fallen below
+#        now - MAX_STALENESS_MS are dropped (Prometheus would reject
+#        them anyway).  The drip advances to the earliest fresh
+#        step, keeping dashboards current.
 #
 # Idle-poll optimisation (file-size gate + exporter metric cache):
 #   When the event file hasn't grown since the last poll, no new data
@@ -211,6 +212,25 @@ _last_prom_ts_ms = 0
 # Prometheus staleness window with safety margin.
 _FILL_INTERVAL_S = 150
 
+# Fill staleness clamp: Prometheus's TSDB compacts every ~2 h,
+# advancing head.minValidTime to the latest block's maxt.  Fill
+# timestamps older than minValidTime are rejected (ErrOutOfBounds).
+# Clamping fills to now - MAX_STALENESS_MS guarantees they stay
+# within the TSDB's acceptable range.  Real events are never clamped
+# (Rule 1); Rule 4 drops stale steps instead of emitting them.
+_MAX_STALENESS_MS = 3_600_000  # 1 hour
+
+def _is_fresh(step_data):
+    """True if the step's wall_time is within the TSDB staleness window.
+
+    Used by Rule 4: if real data cannot be dripped timely, drop older
+    data.  Steps whose wall_time has fallen below the Prometheus TSDB
+    minValidTime (approximated by now - MAX_STALENESS_MS) would be
+    rejected anyway — skip them and move to fresher data.
+    """
+    wt_ms = int(max(wt for wt, _ in step_data.values()) * 1000)
+    return wt_ms >= int(time.time() * 1000) - _MAX_STALENESS_MS
+
 def _fill_timer_expired():
     """True when enough time has elapsed since the last emission that a
     Prometheus query-time staleness gap is forming and a fill is needed.
@@ -306,12 +326,30 @@ def find_event_file():
     # The plugin always starts before training creates its event file,
     # so birth_ts is guaranteed to be <= the creation timestamp of any
     # event file from the current job.
+    #
+    # Mid-training restart fallback: if strict filter_ts=now finds
+    # nothing, the exporter may have been restarted while training is
+    # already running.  Fall back to the newest event file for this
+    # host whose mtime is recent (actively being written to).  One
+    # extra glob + one stat per candidate — acceptable for a one-time
+    # recovery path.
     # ------------------------------------------------------------------
     if not saved:
         _filter_ts = int(time.time())
         result = _discover_event_file(_filter_ts)
         if result is not None:
             return result
+        # Fallback: accept any event file that is actively written to.
+        result = _discover_event_file(filter_ts=0)
+        if result is not None:
+            try:
+                mtime = os.path.getmtime(result)
+                if time.time() - mtime < 3600:
+                    _filter_ts = _parse_embedded_ts(os.path.basename(result)) or 0
+                    _diag(f'mid-training restart: locked onto {result}')
+                    return result
+            except OSError:
+                pass
         _wait_start_ts = int(time.time())
         return None
 
@@ -625,17 +663,33 @@ def _build_prom_lines(step_data, step, timestamp_ms, is_fill):
     return lines
 
 
+def _clamp_fill_ts(intended_ms):
+    """Clamp a fill timestamp to stay within TSDB bounds.
+
+    Only used for fills (staleness_fill=1).  Real events always
+    retain their original wall_time (Rule 1).
+
+    Ensures the fill timestamp is:
+      1. >= intended_ms (the fill's natural anchor point)
+      2. >  _last_prom_ts_ms (monotonic — prevents out-of-order)
+      3. >= now - MAX_STALENESS_MS (prevents too-old rejection after
+         TSDB compaction advances minValidTime)
+    """
+    now_ms = int(time.time() * 1000)
+    return max(intended_ms, _last_prom_ts_ms + 1, now_ms - _MAX_STALENESS_MS)
+
+
 def emit_prometheus(step_data, step):
     """Print Prometheus exposition text for a single step's scalars.
 
-    Uses the event's wall_time as the Prometheus custom timestamp so
-    each data point is placed at its actual recording time.
+    Uses the event's original wall_time as the Prometheus custom
+    timestamp — never modified (Rule 1).  If the wall_time is too
+    old for Prometheus (below minValidTime), the sample is rejected
+    by the TSDB; Rule 4 drops stale steps before they reach
+    emission, so this only occurs in edge cases.
 
-    Rule 1: real events always use their original wall_time — no
-    clamping, no modification, ever.
-
-    Returns the wall_time_ms sent to Prometheus so the caller can
-    update ``_last_prom_ts_ms``.
+    Returns the wall_time_ms so the caller can update
+    ``_last_prom_ts_ms`` (high-water mark only — never goes back).
     """
     if not step_data:
         return 0
@@ -649,14 +703,23 @@ def emit_prometheus(step_data, step):
 def emit_prometheus_fill(step_data, step, fill_time_ms=None):
     """Emit a fill: same data as emit_prometheus but with a synthetic
     timestamp and staleness_fill=1.
+
+    Fill timestamps are clamped (Rule 2) to guarantee monotonicity
+    and freshness — Prometheus must always accept fills so the series
+    stays present and avoids staleness marking.
+
+    Returns the timestamp_ms actually sent so the caller can update
+    ``_last_prom_ts_ms``.
     """
     if not step_data:
-        return
+        return 0
     if fill_time_ms is None:
         fill_time_ms = int(time.time() * 1000)
+    timestamp_ms = _clamp_fill_ts(fill_time_ms)
     sys.stdout.write('\n'.join(
-        _build_prom_lines(step_data, step, fill_time_ms, is_fill=True)
+        _build_prom_lines(step_data, step, timestamp_ms, is_fill=True)
     ) + '\n')
+    return timestamp_ms
 
 # ---------------------------------------------------------------------------
 # Main
@@ -680,20 +743,40 @@ def _locked_state(event_file, step, file_size=None, emit_ts=None,
         return f'# STATE {event_file}|{_filter_ts}|{step}|{fs}|{ets}|{ptm}'
     return f'# STATE {event_file}|{_filter_ts}'
 
+_DIAG_ENABLED = os.environ.get('TB_PLUGIN_DIAG', '') == '1'
+_DIAG_FILE = (os.environ.get('OUTPUT_PATH', '/outputs')
+              + '/.tb_plugin_diag.log') if _DIAG_ENABLED else None
+
+def _diag(msg):
+    """Write diagnostic to NFS for remote debugging.
+
+    No-op unless TB_PLUGIN_DIAG=1 is set in the environment.
+    To enable: export TB_PLUGIN_DIAG=1 before starting the exporter.
+    """
+    if not _DIAG_ENABLED:
+        return
+    try:
+        with open(_DIAG_FILE, 'a') as f:
+            f.write(f'{time.strftime("%H:%M:%S")} {msg}\n')
+    except Exception:
+        pass
+
+_diag(f'plugin invoked, _PLUGIN_STATE present={bool(os.environ.get("_PLUGIN_STATE","").strip())}')
+
 try:
     result = find_event_file()
 
     if result is _NEGATIVE_CACHED:
-        # Negative cache hit — STATE preserved by exporter, backoff ticks.
+        _diag('NEGATIVE_CACHED')
         sys.exit(0)
 
     if result is None:
-        # Discovery found nothing — set __NONE__ STATE.
-        # Fields: filter_ts | glob_ts (= now) | wait_start_ts
+        _diag('NONE - no file found')
         print(f'# STATE __NONE__|{_filter_ts}|{int(time.time())}|{_wait_start_ts}')
         sys.exit(0)
 
     event_file = result
+    _diag(f'event_file={event_file}, step={_last_emitted_step}, fsize={_last_file_size}, emit_ts={_last_emit_ts}, prom_ts={_last_prom_ts_ms}')
 
     # Seed _last_prom_ts_ms from _last_emit_ts when upgrading from an
     # older state format that didn't track the Prometheus timeline.
@@ -825,10 +908,11 @@ try:
 
             if do_fill:
                 fill_ms = int(next_fill_ts * 1000)
-                emit_prometheus_fill(by_step[_last_emitted_step],
-                                     _last_emitted_step,
-                                     fill_time_ms=fill_ms)
-                _last_prom_ts_ms = max(_last_prom_ts_ms, fill_ms)
+                actual_fill_ms = emit_prometheus_fill(
+                    by_step[_last_emitted_step],
+                    _last_emitted_step,
+                    fill_time_ms=fill_ms)
+                _last_prom_ts_ms = max(_last_prom_ts_ms, actual_fill_ms)
                 # emit_size=None so file-size gate won't fire on next
                 # poll — we need to keep reading for more fills or the
                 # eventual real drip.
@@ -836,13 +920,30 @@ try:
                                     None, time.time(),
                                     prom_ts_ms=_last_prom_ts_ms))
             else:
-                # Drip one real step with its real wall_time (Rule 1).
-                emit_step = new_steps[0]
-                if emit_step > _last_emitted_step + 1:
-                    # Gap: the from_step reverse-iteration optimisation
-                    # may have broken early due to a non-monotonic
-                    # event (e.g. step-0 config written mid-stream).
-                    # Fall back to a full parse (from_step=None).
+                # Drip one real step (Rule 1: original wall_time).
+                #
+                # Rule 4: drop steps whose wall_time is stale — they
+                # cannot be dripped timely and Prometheus would reject
+                # them (below minValidTime after TSDB compaction).
+                fresh = [s for s in new_steps if _is_fresh(by_step[s])]
+                if fresh:
+                    emit_step = fresh[0]
+                    new_steps = fresh
+                else:
+                    # All pending steps are stale — emit the latest
+                    # (least stale, best chance of Prometheus acceptance).
+                    emit_step = new_steps[-1]
+                    new_steps = [emit_step]
+
+                # Gap handling: if the from_step reverse-iteration
+                # optimisation broke due to a non-monotonic event
+                # (e.g. step-0 config written mid-stream), fall back
+                # to a full parse.  Only relevant when freshness
+                # filtering didn't skip anything (otherwise the gap
+                # is intentional from Rule 4).
+                if (len(fresh) == len([s for s in sorted_steps
+                                       if s > _last_emitted_step])
+                        and emit_step > _last_emitted_step + 1):
                     by_step_full = parse_all_scalars(records,
                                                      from_step=None)
                     if by_step_full:
@@ -852,14 +953,14 @@ try:
                         if ns_full and ns_full[0] <= _last_emitted_step + 1:
                             by_step = by_step_full
                             sorted_steps = ss_full
-                            new_steps = ns_full
+                            new_steps = [s for s in ns_full
+                                         if _is_fresh(by_step[s])] or ns_full[-1:]
                             emit_step = new_steps[0]
                 # Cache file size ONLY when this is the last pending
                 # step.  If more remain, omit size so the gate won't
                 # fire — the drip must keep reading to advance.
                 emit_size = (current_size
                              if len(new_steps) == 1 else None)
-                # Rule 1: emit with the step's original wall_time.
                 actual_ts_ms = emit_prometheus(by_step[emit_step],
                                                emit_step)
                 _last_prom_ts_ms = max(_last_prom_ts_ms, actual_ts_ms)
@@ -876,10 +977,11 @@ try:
                 next_fill_ts = (_last_prom_ts_ms / 1000.0
                                 + _FILL_INTERVAL_S)
                 fill_ms = int(next_fill_ts * 1000)
-                emit_prometheus_fill(by_step[_last_emitted_step],
-                                     _last_emitted_step,
-                                     fill_time_ms=fill_ms)
-                _last_prom_ts_ms = max(_last_prom_ts_ms, fill_ms)
+                actual_fill_ms = emit_prometheus_fill(
+                    by_step[_last_emitted_step],
+                    _last_emitted_step,
+                    fill_time_ms=fill_ms)
+                _last_prom_ts_ms = max(_last_prom_ts_ms, actual_fill_ms)
                 # Re-arm gate so we don't re-read the file every
                 # poll between fill bursts.
                 print(_locked_state(event_file, _last_emitted_step,
@@ -908,35 +1010,29 @@ try:
                                     prom_ts_ms=_last_prom_ts_ms))
     else:
         # First run (or upgraded from old state).
+        #
+        # Rule 4: drop stale steps, then estimate drip capacity on
+        # the remaining fresh steps.
+        fresh = [s for s in sorted_steps if _is_fresh(by_step[s])]
+        candidates = fresh if fresh else sorted_steps[-1:]
+
         # Estimate how many steps we can drip before the next TB flush
         # to decide whether to start from the beginning or jump ahead.
-        #
-        # step_time:      avg seconds per training step (from wall_times)
-        # flush_budget:   estimated seconds until the next TB flush
-        #                 ≈ batch_size × step_time (the current batch
-        #                   accumulated over one flush period)
-        # poll_interval:  seconds between plugin invocations (from exporter)
-        # drip_capacity:  steps we can emit before the next batch arrives
-        #
-        # If drip_capacity >= batch_size, start from the earliest step
-        # (we'll catch up in time).  Otherwise, skip the oldest steps
-        # that would cause us to fall permanently behind.
-        emit_step = sorted_steps[-1]  # default: jump to latest
-        if len(sorted_steps) >= 2:
-            wt_vals = [wt for s in sorted_steps
+        emit_step = candidates[-1]  # default: jump to latest
+        if len(candidates) >= 2:
+            wt_vals = [wt for s in candidates
                        for wt, _ in by_step[s].values()]
-            step_range = sorted_steps[-1] - sorted_steps[0]
+            step_range = candidates[-1] - candidates[0]
             if step_range > 0 and wt_vals:
                 step_time = (max(wt_vals) - min(wt_vals)) / step_range
-                flush_budget = len(sorted_steps) * step_time
+                flush_budget = len(candidates) * step_time
                 poll_interval = float(
                     os.environ.get('POLL_INTERVAL', 10))
                 if poll_interval > 0 and flush_budget > 0:
                     drip_capacity = int(flush_budget / poll_interval)
-                    skip = max(0, len(sorted_steps)
+                    skip = max(0, len(candidates)
                                - max(1, drip_capacity))
-                    emit_step = sorted_steps[skip]
-        # Cache file size only when no more steps remain to drip.
+                    emit_step = candidates[skip]
         emit_size = (current_size
                      if emit_step == sorted_steps[-1] else None)
         ats = emit_prometheus(by_step[emit_step], emit_step)
@@ -945,10 +1041,9 @@ try:
                             time.time(),
                             prom_ts_ms=_last_prom_ts_ms))
 except Exception as exc:
+    import traceback
+    _diag(f'EXCEPTION: {exc}\n{traceback.format_exc()}')
     print(f'[tb_metrics_plugin] ERROR: {exc}', file=sys.stderr)
-    # Re-emit state so the exporter doesn't lose it on error cycles.
-    # Without this, the exporter's "no output = keep old state" behavior
-    # is relied on implicitly — explicit re-emit is safer.
     _saved = os.environ.get('_PLUGIN_STATE', '').strip()
     if _saved:
         print(f'# STATE {_saved}')
