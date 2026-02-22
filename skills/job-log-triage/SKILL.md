@@ -180,7 +180,7 @@ When a job has no JOB SUMMARY and is no longer running:
 1. **Check for OOM-kill signatures** — `Killed`, `oom-kill`, `Out of memory` near the end of available output.
 2. **Check for SIGKILL** — abrupt log cutoff mid-line, no cleanup messages.
 3. **Check for Slurm preemption** — `scontrol show job` (if Slurm ID is known) may show `State=PREEMPTED` or `State=TIMEOUT`.
-4. **Check dmesg** (if accessible) — `dmesg -T | grep -i "oom\|killed process"` on the compute node.
+4. **Check dmesg** (if accessible) — `dmesg -T | grep -i "oom\|killed process"` on the compute node. If SSH is unavailable but the job was `RAY=1` and the Ray cluster is still reachable, use the **Ray Jobs API** to read dmesg remotely (see `skills/tsdb-diagnosis/SKILL.md` → "Remote Execution via Ray Jobs API"). For finished jobs where Ray is gone, dmesg is only accessible via SSH or out-of-band node access.
 5. If none of the above yields an answer, report as "unknown-death — process killed externally without writing JOB SUMMARY. Most common cause: host OOM-kill or Slurm preemption."
 
 ## Diagnosing node failures
@@ -194,6 +194,7 @@ When `NODE_EXIT host=<hostname> exit=<rc>` appears:
    - Exit 134 (128+6) = SIGABRT (assertion failure, core dump)
    - Exit 139 (128+11) = SIGSEGV (crash, core dump likely in job dir)
    - Exit 1 = generic error (read task output for details)
+4. For `RAY=1` jobs where the job is still live, use the **Ray Jobs API** to inspect the failed node remotely — check dmesg for GPU errors, OOM kills, or driver faults. For hardware-related node failures (exit 137 with no OOM in logs, or exit 134/139), recommend TSDB diagnosis (Playbook 4: Node Failure / Hardware) for RAS error counters and thermal data.
 
 ## Output format
 

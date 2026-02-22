@@ -161,6 +161,8 @@ hw_io_pressure_full_pct{host="node001"}               # Storage stalls?
 
 **Anti-staleness fills.** During long idle periods (e.g. checkpoint saves), the plugin periodically re-emits the last known data to keep `tb_*` series alive in Prometheus. Use `tb_metrics_plugin_staleness_fill == 0` to exclude synthetic fills from analysis queries.
 
+**Best-effort bridge.** The `tb_*` metrics in Prometheus are best-effort. Gaps can occur when another plugin hangs and blocks the exporter cycle, when the exporter crashes and restarts, or when Prometheus rejects samples whose timestamps are too old after TSDB compaction. The raw TensorBoard event file (`<job_dir>/tensorboard/events.out.tfevents.*`) is always the ground truth for training scalars.
+
 ## Customizing metrics
 
 Any `*_metrics_plugin.sh` script in `utils/` is auto-discovered by `metrics_exporter.sh` on every node. Each plugin runs every 10 seconds and outputs Prometheus exposition format text.
@@ -177,6 +179,7 @@ To add a new metric:
 - **Idle replay.** When a state-using plugin outputs only a STATE line (no metrics), the exporter replays the last cached metrics automatically — skip expensive work when nothing changed.
 - **Cache invalidation.** Emit `# STATE __NONE__...` when the data source is gone — the exporter clears the cache so stale metrics are not replayed.
 - **Permanent skip.** Exit with code 99 to tell the exporter to never invoke the plugin again (e.g. wrong node type, feature disabled).
+- **Execution timeout.** Each plugin invocation is killed if it exceeds the poll interval (~10s). This prevents a hung plugin (e.g., a sysfs read stuck in kernel D-state) from blocking other plugins. Timed-out invocations produce no output; the exporter replays the last cached metrics for that plugin.
 
 **Built-in plugins:**
 
