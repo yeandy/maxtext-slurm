@@ -61,9 +61,9 @@ utils/slurm_job_monitor.sh -j <slurm_job_id>
 
 See [Observability](docs/observability.md) for the full story.
 
-## AI-assisted workflows
+## Agentic workflows
 
-The [`skills/`](skills/) directory contains structured diagnostic instructions for AI coding assistants ([Cursor](https://cursor.com/), [Claude Code](https://docs.anthropic.com/en/docs/claude-code)). Each skill encodes the methodology from very senior systems engineers — not just what commands to run, but how to interpret results, distinguish symptoms from root causes, and trace causal chains across the full stack. Skills ship for performance analysis, job failure triage, and TSDB-based incident diagnosis. See [`skills/README.md`](skills/README.md) for the full list.
+The [`skills/`](skills/) directory contains structured instructions for AI agents ([Cursor](https://cursor.com/), [Claude Code](https://docs.anthropic.com/en/docs/claude-code)). Each skill encodes the methodology from very senior systems engineers — not just what commands to run, but how to interpret results, distinguish symptoms from root causes, and trace causal chains across the full stack. Skills ship for performance analysis, job failure triage, and TSDB-based incident diagnosis. See [`skills/README.md`](skills/README.md) for the full list.
 
 ## Learn more
 
