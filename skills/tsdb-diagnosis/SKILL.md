@@ -567,7 +567,7 @@ Metrics tell you *what* is happening; source code tells you *why*. When the TSDB
 - JAX: `/opt/venv/lib/python3.12/site-packages/jax/`
 - XLA C++ headers (for understanding communicator/backend behavior): search under `/opt/venv/` or use `python3 -c "import jaxlib; print(jaxlib.__path__)"` to locate
 
-**Example from real diagnosis:** TSDB showed `hw_procs_running` was ~4.6 higher per host in a restored job vs a fresh-start baseline. Code tracing revealed: MaxText `checkpointing.py` → Orbax `SingleReplicaArrayHandler.deserialize()` → `multislice.broadcast_one_replica_to_all()` → `_merge_globalized_replicas()` which uses `jax.jit(jnp.sum)` → XLA all-reduce collective → new RCCL communicators with unique `GpuCliqueKey` → cached permanently in C++ clique cache → background polling threads increase `hw_procs_running`. Without code tracing, the TSDB alone could only say "more processes are running" — the code trace identified the exact mechanism and pointed to a fix (use `jax.device_put` instead).
+**Example from real diagnosis:** TSDB showed `hw_procs_running` was ~17 higher per host in a restored job (with `enable_single_replica_ckpt_restoring=true`) vs a fresh-start baseline. Code tracing revealed: MaxText `checkpointing.py` → Orbax `SingleReplicaArrayHandler.deserialize()` → `multislice.broadcast_one_replica_to_all()` → `_merge_globalized_replicas()` which uses `jax.jit(jnp.sum)` → XLA all-reduce collective → new RCCL communicators with unique `GpuCliqueKey` → cached permanently in C++ clique cache → background polling threads increase `hw_procs_running`. Without code tracing, the TSDB alone could only say "more processes are running" — the code trace identified the exact mechanism and pointed to a fix.
 
 ### Checkpointing interference
 
@@ -592,7 +592,7 @@ Checkpointing is one of the most disruptive periodic events in training. During 
 
 **Single-replica checkpoint restore and RCCL communicator leaks:**
 
-When `enable_single_replica_ckpt_restoring=true` and the job restores from a checkpoint, the restore code path leaks RCCL communicators and their background polling threads. This manifests as a **persistent increase in `hw_procs_running`** (~3–8 extra runnable processes per host) that appears immediately after restore and never recovers. The leaked threads create constant CPU contention — competing with data pipeline threads, RCCL coordination, and the Python runtime — causing a persistent throughput (TGS) drop of ~0.5–1%.
+When `enable_single_replica_ckpt_restoring=true` and the job restores from a checkpoint, the restore code path leaks RCCL communicators and their background polling threads. This manifests as a **persistent increase in `hw_procs_running`** (~17 extra runnable threads per host on a 24-node / 3-replica MoE run) that appears immediately after restore and never recovers. The leaked threads create constant CPU contention — competing with data pipeline threads, RCCL coordination, and the Python runtime — causing a persistent throughput (TGS) drop of ~1%.
 
 **Root cause (code-level):** During single-replica restore, Orbax's `SingleReplicaArrayHandler` broadcasts the restored parameters from one replica to all others. The non-dispatcher code path in `orbax/.../multislice.py` (`_merge_globalized_replicas`) uses `jax.jit(lambda: jnp.sum(axis=0), out_shardings=...)` to perform this broadcast. The `jnp.sum` across the replica axis compiles to an **XLA all-reduce collective**, which causes RCCL to initialize new communicators via XLA's `AcquireGpuClique()`. Because the restore uses a different mesh/sharding configuration (single-replica subset mesh) than training, the resulting `GpuCliqueKey` is unique — so RCCL creates brand-new communicators instead of reusing the training ones. These communicators and their background polling threads are cached permanently in XLA's C++ GPU clique cache (`GpuCliqueKey → LockableGpuClique`).
 
@@ -604,7 +604,9 @@ When `enable_single_replica_ckpt_restoring=true` and the job restores from a che
 
 **Log-level confirmation:** The ray worker `.out` logs show an extra NCCL communicator initialization wave during restore. Look for `init.cc:2095 NCCL WARN MSCCL++` messages — a fresh-start job has 2 waves (startup + training), while a restored job has 3 waves (startup + **restore broadcast** + training). The extra wave corresponds to the `_merge_globalized_replicas` all-reduce creating new communicators.
 
-**Fix direction:** Orbax's dispatcher-based code path (`SingleReplicaArrayHandler.deserialize` with `self._dispatcher is not None`) already avoids this — it uses `jax.device_put` for the broadcast step instead of `jax.jit(jnp.sum)`, which performs device-to-device transfers without creating new RCCL communicators. The fix is to port this approach to the non-dispatcher path in `_merge_globalized_replicas`, or to enable the dispatcher path in MaxText.
+**Verified fix:** Two patches on the `yihuang/fix-rccl-thread-leak-single-replica-restore` branch address this:
+1. Replace Orbax's JIT-based broadcast with a direct RCCL broadcast via ctypes that explicitly destroys communicators after use (`ncclCommInitRank` / `ncclBroadcast` / `ncclCommDestroy` + `gc.collect()`). This eliminates the leaked threads and the ~1% TGS drop.
+2. Replace Orbax's `jax.jit(create_zeros)` on non-primary hosts with `numpy.zeros` + `jax.device_put`, eliminating extra XLA compilations during restore that degrade steady-state performance.
 
 **How to detect:** When comparing a restored job against a fresh-start baseline with identical config:
 - Check `hw_procs_running` — a uniform delta across all hosts (not a spike, not on specific nodes) after restore is the signature.
@@ -612,6 +614,7 @@ When `enable_single_replica_ckpt_restoring=true` and the job restores from a che
 - Training-level metrics (loss, grad norms, LR) will be identical between the two jobs — this is purely system-level contention.
 - A fresh start with the same config but no actual restore (even if `enable_single_replica_ckpt_restoring=true`) does not trigger the leak — the restore code path must actually execute.
 - Check ray worker `.out` logs for the extra NCCL init wave (3 waves vs 2) as a definitive confirmation.
+- If both jobs ran with `_env_ENABLE_XLA_DUMP=1`, compare the number of compiled modules in `xla_dump/` — a restored job may have extra `jit_create_zeros` entries from Orbax's non-dispatcher path. These extra XLA compilations are a secondary performance penalty beyond the leaked threads.
 
 ---
 
@@ -637,16 +640,16 @@ When `enable_single_replica_ckpt_restoring=true` and the job restores from a che
 
 | GPU util | Power | Network | Diagnosis |
 |----------|-------|---------|-----------|
-| ~100% all nodes | Idle-level (~300W MI300X, vs 600-700W+ active) | Clean | **Confirmed RCCL busy-wait hang.** All GPUs spinning in RCCL polling loop. No real computation. |
+| High (variable per GPU) | Idle-level (~260–300W MI355X) | Clean | **Confirmed RCCL busy-wait hang.** GPUs in the RCCL polling loop report high utilization, but power is at idle/standby. **Important:** utilization may not be uniform — in partial deadlocks, only GPUs that entered the collective show high utilization (e.g., 2 of 8 GPUs at 100%, rest at 0%). Always check power as the ground truth. |
 | ~100% all nodes | Idle-level | Retransmit spike before hang | **Network-triggered RCCL hang.** A transient network event caused a collective to stall, then all nodes entered busy-wait. |
 | ~100% most nodes | Mixed (some idle, some active) | Clean | **Possible straggler.** One or more nodes may have fallen behind, causing others to wait. Check per-node power to identify the slow node. |
 | 0% on some nodes | 0W on some nodes | N/A | **Node death.** Some nodes died — remaining nodes hung waiting for them. Check `hw_dmesg_gpu_errors_total` and `hw_gpu_ras_*` on the dead nodes. |
-| ~100% all nodes | Active-level (600W+) | Clean | **Not a hang** — training was still running. Re-check the triage classification. |
+| ~100% all nodes | Active-level (~900W MI355X) | Clean | **Not a hang** — training was still running. Re-check the triage classification. |
 
-**Key thresholds (MI300X):**
-- Active training power: 600-750W per GPU
-- RCCL busy-wait power: 250-350W per GPU
-- Idle power: <100W per GPU
+**Key thresholds (MI355X):**
+- Active training power: ~900W per GPU
+- RCCL busy-wait power: ~300W per GPU (only ~42W above idle — nearly indistinguishable from standby)
+- Idle/standby power: ~260W per GPU
 
 ---
 
@@ -746,7 +749,7 @@ When `enable_single_replica_ckpt_restoring=true` and the job restores from a che
 
 **GPU driver fault / D-state hang (non-fatal but degrading):**
 
-Not all GPU hardware issues crash the job. A common pattern on AMD MI300X nodes is a **kernel bug in the RAS sysfs reporting path** that doesn't affect GPU compute but makes the monitoring interface unreliable. Diagnosis:
+Not all GPU hardware issues crash the job. A common pattern on AMD Instinct nodes is a **kernel bug in the RAS sysfs reporting path** that doesn't affect GPU compute but makes the monitoring interface unreliable. Diagnosis:
 
 1. **Detect:** `hw_dmesg_gpu_errors_total` > 0 on one node, 0 on all others. `hw_scrape_duration_seconds` alternates between ~12s and <3s on the affected node (timeout vs success). `hw_gpu_power_watts` has intermittent gaps.
 
@@ -874,7 +877,7 @@ Anomalous GPUs: <list of host:gpu with any non-zero errors or outlier metrics>
 
 | Contention source | Metrics to check | What to look for |
 |--------------------|-----------------|------------------|
-| **CPU** | `hw_procs_running`, `hw_procs_blocked`, `hw_context_switches_total`, `ray_node_cpu_utilization`, `hw_gpu_user_processes` | High runnable count (oversubscribed), high blocked count (I/O wait), excessive context switching. **For multi-job comparison:** a constant but higher process count in one job creates a constant baseline CPU tax — extra processes compete with data pipeline threads, NCCL coordination, and Python runtime. This won't show as a spike but as a persistent throughput gap. Compare `hw_procs_running` across jobs, not just within a single job. **Known cause:** `enable_single_replica_ckpt_restoring=true` leaks RCCL communicator polling threads on restore (~3–8 procs/host) because Orbax's `_merge_globalized_replicas` creates all-reduce collectives with unique `GpuCliqueKey`s cached permanently in XLA's C++ clique cache; `jax.clear_caches()` does not help (see "Checkpointing interference" section). |
+| **CPU** | `hw_procs_running`, `hw_procs_blocked`, `hw_context_switches_total`, `ray_node_cpu_utilization`, `hw_gpu_user_processes` | High runnable count (oversubscribed), high blocked count (I/O wait), excessive context switching. **For multi-job comparison:** a constant but higher process count in one job creates a constant baseline CPU tax — extra processes compete with data pipeline threads, NCCL coordination, and Python runtime. This won't show as a spike but as a persistent throughput gap. Compare `hw_procs_running` across jobs, not just within a single job. **Known cause:** `enable_single_replica_ckpt_restoring=true` leaks RCCL communicator polling threads on restore (~17 threads/host on a 3-replica run) because Orbax's `_merge_globalized_replicas` creates all-reduce collectives with unique `GpuCliqueKey`s cached permanently in XLA's C++ clique cache; `jax.clear_caches()` does not help (see "Checkpointing interference" section). |
 | **Network (TCP)** | `rate(hw_tcp_retransmits_total[5m])`, `rate(hw_tcp_estab_resets_total[5m])`, `rate(hw_tcp_abort_on_timeout_total[5m])` | Retransmit bursts slow NFS and gRPC; resets and aborts indicate connection failures |
 | **Network (RDMA)** | `rate(hw_rdma_tx_retx_pkts_total[5m])`, `rate(hw_rdma_tx_ack_timeout_total[5m])`, `rate(hw_rdma_rx_cnp_pkts_total[5m])` | RDMA retransmits slow NCCL/RCCL collectives; CNP indicates switch congestion |
 | **Storage I/O** | `hw_io_pressure_full_pct`, `hw_io_pressure_some_pct`, `hw_mem_dirty_bytes`, `hw_mem_writeback_bytes` | I/O pressure stalls data loading and checkpointing; dirty page buildup indicates NFS/storage backlog |
