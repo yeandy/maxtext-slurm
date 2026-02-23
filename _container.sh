@@ -131,7 +131,7 @@ SETUP_CMDS="
     if [[ -n \"${MAXTEXT_PATCH_BRANCH:-}\" ]]; then
         echo \"[INFO] Checking out $MAXTEXT_PATCH_BRANCH...\"
         if git fetch origin \"$MAXTEXT_PATCH_BRANCH\" && git checkout \"origin/$MAXTEXT_PATCH_BRANCH\"; then
-            echo \"[OK] Checked out $MAXTEXT_PATCH_BRANCH in the local maxtext repo.\"
+            echo \"[OK] Checked out $MAXTEXT_PATCH_BRANCH at \$(git rev-parse --short HEAD) in the local maxtext repo.\"
         else
             echo \"[FAIL] Failed to check out $MAXTEXT_PATCH_BRANCH in the local maxtext repo.\" >&2
             exit 1
