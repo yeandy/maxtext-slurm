@@ -165,6 +165,7 @@ def _job_summary(j: dict, dir_name: str = "", include_per_step: bool = False) ->
         "computation_pct": tl.get("computation_time"),
         "exposed_comm_pct": tl.get("exposed_comm_time"),
         "idle_pct": tl.get("idle_time"),
+        "uses_ray": j.get("uses_ray", False),
     }
     if include_per_step:
         nn = j.get("num_nodes") or 1

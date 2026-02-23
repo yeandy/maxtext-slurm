@@ -231,6 +231,7 @@ async function renderDashboard(forceRefresh) {
         <th data-sort="model">Model</th>
         <th data-sort="exp_tag">EXP_TAG</th>
         <th data-sort="num_nodes" class="num">Nodes</th>
+        <th data-sort="uses_ray">Ray</th>
         <th data-sort="tgs_steady" class="num">Steady TGS</th>
         <th data-sort="num_steps" class="num">Steps</th>
         <th data-sort="computation_pct" class="num">Compute%</th>
@@ -249,6 +250,7 @@ async function renderDashboard(forceRefresh) {
       <td>${j.model || '—'}</td>
       <td>${j.exp_tag || '—'}</td>
       <td class="num">${j.num_nodes ?? '—'}</td>
+      <td>${j.uses_ray ? '<span class="badge badge-purple">Ray</span>' : ''}</td>
       <td class="num">${fmt(j.tgs_steady, 1)}</td>
       <td class="num">${j.step_begin != null && j.step_end != null ? j.step_begin + '–' + j.step_end : (j.num_steps ?? '—')}</td>
       <td class="num">${fmt(j.computation_pct, 1)}</td>
@@ -345,7 +347,7 @@ async function renderJobDetail(jobId) {
   let html = `
     <p style="margin-bottom:16px"><a href="#/">&larr; Dashboard</a></p>
     <h2 style="margin-bottom:4px">Job ${data.job_id || jobId}${data.job_name ? ' — ' + data.job_name : ''} ${statusBadge(js.status)}</h2>
-    <p style="color:var(--fg2);font-size:13px;margin-bottom:20px">${data.model || ''} &middot; ${data.exp_tag ? data.exp_tag + ' &middot; ' : ''}${data.num_nodes || '?'} nodes &middot; ${data.dir_name || ''}${js.exit_code != null ? ' &middot; exit ' + js.exit_code : ''}</p>
+    <p style="color:var(--fg2);font-size:13px;margin-bottom:20px">${data.model || ''} &middot; ${data.exp_tag ? data.exp_tag + ' &middot; ' : ''}${data.num_nodes || '?'} nodes${data.uses_ray ? ' &middot; <span class="badge badge-purple">Ray</span>' : ''} &middot; ${data.dir_name || ''}${js.exit_code != null ? ' &middot; exit ' + js.exit_code : ''}</p>
 
     <div class="cards">
       <div class="card"><div class="label">Steady TGS</div><div class="value">${fmt(steady?.mean, 1)}</div><div class="sub">std ${fmt(steady?.std, 2)}, n=${steady?.n || 0} (${steady?.range || '—'})</div></div>
@@ -747,6 +749,7 @@ async function renderCompare() {
       ['Model', j => j.model || '—'],
       ['EXP_TAG', j => j.exp_tag || '—'],
       ['Nodes', j => j.num_nodes ?? '—'],
+      ['Ray', j => j.uses_ray ? '<span class="badge badge-purple">Ray</span>' : 'No'],
       ['Steady TGS', j => fmt(j.tgs_steady, 1)],
       ['All TGS', j => fmt(j.tgs_all, 1)],
       ['Steps', j => j.step_begin != null && j.step_end != null ? j.step_begin + '–' + j.step_end : (j.num_steps ?? '—')],
