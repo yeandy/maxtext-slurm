@@ -327,29 +327,17 @@ def find_event_file():
     # so birth_ts is guaranteed to be <= the creation timestamp of any
     # event file from the current job.
     #
-    # Mid-training restart fallback: if strict filter_ts=now finds
-    # nothing, the exporter may have been restarted while training is
-    # already running.  Fall back to the newest event file for this
-    # host whose mtime is recent (actively being written to).  One
-    # extra glob + one stat per candidate — acceptable for a one-time
-    # recovery path.
+    # The event file's creation timestamp (embedded in its filename)
+    # is always >= the exporter's birth time, because the exporter
+    # starts during container init, before training creates the file.
+    # So the strict filter (created_ts >= filter_ts) always works for
+    # the current job.  No fallback is needed.
     # ------------------------------------------------------------------
     if not saved:
         _filter_ts = int(time.time())
         result = _discover_event_file(_filter_ts)
         if result is not None:
             return result
-        # Fallback: accept any event file that is actively written to.
-        result = _discover_event_file(filter_ts=0)
-        if result is not None:
-            try:
-                mtime = os.path.getmtime(result)
-                if time.time() - mtime < 3600:
-                    _filter_ts = _parse_embedded_ts(os.path.basename(result)) or 0
-                    _diag(f'mid-training restart: locked onto {result}')
-                    return result
-            except OSError:
-                pass
         _wait_start_ts = int(time.time())
         return None
 
