@@ -65,7 +65,7 @@ RE_JOB_NAME = re.compile(r"^(?:SLURM_JOB_NAME|JOB_NAME)\s*=\s*(.+)", re.MULTILIN
 RE_MODEL_NAME = re.compile(r"^MODEL_NAME\s*=\s*(.+)", re.MULTILINE)
 RE_JOB_ID_HEADER = re.compile(r"^(?:SLURM_JOB_ID|JOB_ID)\s*=\s*(.+)", re.MULTILINE)
 RE_EXP_TAG = re.compile(r"^EXP_TAG\s*=\s*(.+)", re.MULTILINE)
-RE_USE_RAY = re.compile(r"^(?:USE_RAY|RAY)\s*=\s*(true|1)\s*$", re.MULTILINE | re.IGNORECASE)
+RE_RAY_ACTOR = re.compile(r"MaxTextTrainerActor")
 RE_PASSTHROUGH = re.compile(r'^PASSTHROUGH_ARGS\s*=\s*"?(.*?)"?\s*$', re.MULTILINE)
 RE_JOB_SUMMARY = re.compile(r"^=+ JOB SUMMARY =+", re.MULTILINE)
 RE_JOB_STATUS = re.compile(
@@ -367,9 +367,6 @@ def _parse_log_metadata(text: str, log_file: Path) -> dict:
     if m:
         meta["exp_tag"] = m.group(1).strip()
 
-    if RE_USE_RAY.search(header):
-        meta["uses_ray"] = True
-
     # Infer timestamp from log filename (local_YYYYMMDD_HHMMSS_... or slurm job)
     fname = log_file.stem
     ts_m = re.search(r"(\d{8})_(\d{6})", fname)
@@ -592,9 +589,8 @@ def _build_analysis_json(
         result["step_begin"] = unique_steps[0]
         result["step_end"] = unique_steps[-1]
 
-    # Detect Ray usage from ray_logs directory (supplements log header detection)
-    if job_dir and (job_dir / "ray_logs").is_dir():
-        result.setdefault("uses_ray", True)
+    if log_text and RE_RAY_ACTOR.search(log_text):
+        result["uses_ray"] = True
 
     # Artifact paths (relative to job_dir where possible)
     if job_dir:
