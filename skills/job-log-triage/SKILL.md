@@ -149,6 +149,10 @@ When a job is still RUNNING in Slurm but training has stalled:
 
 **This is a known issue with a documented root cause.** The JAX coordination service's heartbeat mechanism has design flaws that cause it to declare healthy, actively-training tasks as dead. The root cause — a shared gRPC channel that blocks heartbeat RPCs — is documented in `docs/jax-heartbeat-false-positive-postmortem.md`. The error message "The tasks have crashed" is misleading; the tasks are almost always alive and training normally when they are killed.
 
+**Two distinct failure modes:**
+1. **Init-phase kill (deterministic):** If no training steps completed before the crash, the heartbeat timeout is shorter than XLA compilation + initial checkpoint save time. CPU contention during compilation starves the gRPC heartbeat thread. Fix: increase the timeout (the job will succeed on retry with a larger value).
+2. **Mid-training kill (probabilistic):** If training was running for many steps before the crash, this is the gRPC channel deadlock (Bug 3 in the postmortem). Fix: set the timeout to several hours.
+
 **Default assumption: false positive.** Unless there is clear evidence of a real crash (Python traceback, NCCL error, or SIGKILL on the accused tasks before the heartbeat message), treat heartbeat timeouts as false positives. Apply this checklist to confirm:
 
 1. **Check if "dead" tasks logged their own death.** Search for `Polled error from coordination service` or `Terminating process because the JAX distributed service detected fatal errors` on the accused task IDs. If a task reports itself as dead, it was alive — **confirmed false positive**.
