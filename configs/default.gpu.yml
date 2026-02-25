@@ -17,7 +17,7 @@ model_name: "default"
 # ── Training ─────────────────────────────────────────────────────────────────
 steps: 15
 learning_rate: 3e-4
-metrics_file: ./output/convergence_jax/metrics.default.txt
+metrics_file: metrics.default.txt
 
 # ── Parallelism ──────────────────────────────────────────────────────────────
 # At most one DCN axis can be unspecified (-1)
@@ -66,3 +66,4 @@ dataset_type: hf
 hf_path: "allenai/c4" 
 hf_data_dir: 'en'
 tokenizer_path: "meta-llama/Llama-2-7b-hf"
+hf_access_token: ""
