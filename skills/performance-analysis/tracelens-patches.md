@@ -9,14 +9,14 @@ python3 -c "import TraceLens; print(TraceLens.__path__[0])"
 
 ## Patch sequence
 
-Apply these patches in order. There are 5 files, 13 patches total.
+Apply these patches in order. There are 6 files, 13 patches total.
 
 ---
 
 ## File 1: `TraceLens/util.py`
 
 ### Problem
-`tensorboard_plugin_profile.convert.raw_to_tool_data` no longer exists; the function moved to `xprof.convert._pywrap_profiler_plugin`. The tool name also changed from `trace_viewer@^` to `trace_viewer@`.
+`tensorboard_plugin_profile.convert.raw_to_tool_data` no longer exists; the function moved to `xprof.convert._pywrap_profiler_plugin`. The tool name also changed from `trace_viewer@^` to `trace_viewer@`. Stale protobuf descriptors in `tensorboard_plugin_profile` raise `TypeError` (not just `ImportError`), so the except clause must catch all three: `ImportError`, `AttributeError`, and `TypeError`.
 
 ### Patch 1a: `load_data` method (~line 34)
 
@@ -32,7 +32,7 @@ Apply these patches in order. There are 5 files, 13 patches total.
             try:
                 from tensorboard_plugin_profile.convert import raw_to_tool_data as convert
                 data, _ = convert.xspace_to_tool_data([filename_path], "trace_viewer@^", {})
-            except (ImportError, AttributeError):
+            except (ImportError, AttributeError, TypeError):
                 from xprof.convert import _pywrap_profiler_plugin as _xprof
                 data, _ = _xprof.xspace_to_tools_data([filename_path], "trace_viewer@", {})
 ```
@@ -56,7 +56,7 @@ Apply these patches in order. There are 5 files, 13 patches total.
     def process_protobuf_file(protobuf_file_name, module_name):
         try:
             from tensorboard_plugin_profile.convert import raw_to_tool_data as convert
-        except (ImportError, AttributeError):
+        except (ImportError, AttributeError, TypeError):
             from xprof.convert import _pywrap_profiler_plugin as _xprof
             class convert:
                 xspace_to_tool_data = staticmethod(lambda paths, tool, params: _xprof.xspace_to_tools_data(paths, tool, params))

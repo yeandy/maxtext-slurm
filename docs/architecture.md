@@ -37,7 +37,7 @@ _job.sbatch                         │                         │
                            MaxText.train.main()
 ```
 
-`run_local.sh` with a model name verifies GPU availability first; with no args it drops into an interactive shell. `in_container_run.sh` provides the same interface for use inside the container (skips the Docker launch). All three entry points share argument parsing via `utils/parse_job_args.sh`; the two `run` scripts additionally share environment setup, logging, and job summary via `utils/run_setup.sh`. See [Job Submission](job-submission.md) for usage.
+`run_local.sh` with a model name verifies GPU availability first; with no args it drops into an interactive shell. `in_container_run.sh` provides the same interface for use inside the container (skips the [Docker](https://www.docker.com/) launch). All three entry points share argument parsing via `utils/parse_job_args.sh`; the two `run` scripts additionally share environment setup, logging, and job summary via `utils/run_setup.sh`. See [Job Submission](job-submission.md) for usage.
 
 `mfu_tracker` auto-detects GPU + dtype and wraps stdout/stderr to append `MFU: X.XX%` to TFLOP/s/device log lines.
 
@@ -113,7 +113,7 @@ The codebase is layered so that scheduler coupling is confined to the orchestrat
 | Tier | Files | Scheduler coupling |
 |------|-------|--------------------|
 | **Orchestration** | `submit.sh`, `_job.sbatch`, `reservation.sh`, `slurm_job_monitor.sh` | Slurm-specific (`sbatch`, `srun`, `#SBATCH`). Replace this tier for a different scheduler. |
-| **Container boundary** | `_container.sh` | Reads `SLURM_*` env vars with generic fallbacks (`JOB_ID`, `NNODES`, `NODE_RANK`); works unmodified when callers set the generic names. |
+| **Container boundary** | `_container.sh` | Uses generic env vars (`JOB_ID`, `NNODES`, `NODE_RANK`) with `SLURM_*` fallbacks; maps `RAY` → `USE_RAY` and conditionally passes training/Ray env vars to Docker. One Slurm touch point: `scontrol` for `NODELIST_EXPANDED` (skipped when Slurm is absent). |
 | **Training** | `_train.sh`, `train_env.sh`, all Python code | Zero scheduler awareness. |
 | **Utilities** | `parse_job_args.sh`, `run_setup.sh`, `artifact.sh`, `preflight.sh`, `docker_utils.sh`, `stage_timeout.sh` | No scheduler dependency. |
 

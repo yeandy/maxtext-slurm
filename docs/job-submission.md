@@ -45,7 +45,7 @@ A warning is printed if the path doesn't appear to be on a shared filesystem. Th
 #
 # The -- separator splits sbatch arguments from passthrough arguments.
 #
-# Examples (using  as placeholder for wherever the repo is cloned):
+# Examples (using $REPO as placeholder for wherever the repo is cloned):
 #   submit.sh 70b -N 1                                      # llama2-70b on 1 node
 #   submit.sh 70b:baseline -N 1                             # With experiment tag
 #   submit.sh 70b -N 2 --time=24:00:00                      # Multiple sbatch args
@@ -69,6 +69,7 @@ Run a single-node training job locally without Slurm scheduling:
 ```bash
 run_local.sh 70b -- steps=10
 run_local.sh 70b:my-experiment -- per_device_batch_size=2
+RAY=1 run_local.sh 70b -- steps=10                        # with observability
 ```
 
 Or drop into an interactive shell inside the container (no GPU gate):

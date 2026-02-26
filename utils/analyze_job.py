@@ -60,11 +60,12 @@ RE_STEP_LINE = re.compile(
     r"Tokens/s/device:\s*([0-9.]+).*?loss:\s*([0-9.]+)"
 )
 RE_NNODES = re.compile(r"^(?:NNODES|SLURM_JOB_NUM_NODES)\s*=\s*(\d+)", re.MULTILINE)
-RE_NODELIST = re.compile(r"^SLURM_JOB_NODELIST\s*=\s*(.+)", re.MULTILINE)
+RE_NODELIST = re.compile(r"^(?:SLURM_JOB_NODELIST|JOB_NODELIST)\s*=\s*(.+)", re.MULTILINE)
 RE_JOB_NAME = re.compile(r"^(?:SLURM_JOB_NAME|JOB_NAME)\s*=\s*(.+)", re.MULTILINE)
 RE_MODEL_NAME = re.compile(r"^MODEL_NAME\s*=\s*(.+)", re.MULTILINE)
 RE_JOB_ID_HEADER = re.compile(r"^(?:SLURM_JOB_ID|JOB_ID)\s*=\s*(.+)", re.MULTILINE)
 RE_EXP_TAG = re.compile(r"^EXP_TAG\s*=\s*(.+)", re.MULTILINE)
+RE_RAY_ACTOR = re.compile(r"MaxTextTrainerActor")
 RE_PASSTHROUGH = re.compile(r'^PASSTHROUGH_ARGS\s*=\s*"?(.*?)"?\s*$', re.MULTILINE)
 RE_JOB_SUMMARY = re.compile(r"^=+ JOB SUMMARY =+", re.MULTILINE)
 RE_JOB_STATUS = re.compile(
@@ -194,15 +195,66 @@ def _extract_tensorboard_dir(log_text: str | None, outputs_dir: Path) -> Path | 
     return host_path if host_path.is_dir() else None
 
 
+def _parse_profile_timestamp(name: str) -> float | None:
+    """Parse a profile directory name like ``2026_02_18_08_56_06`` to epoch seconds."""
+    try:
+        dt = datetime.strptime(name, "%Y_%m_%d_%H_%M_%S").replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except ValueError:
+        return None
+
+
+_TIME_WINDOW_END_BUFFER_SECS = 60
+
+
+def _job_time_window(job_dir: Path, log_file: Path | None) -> tuple[float, float] | None:
+    """Return (start_epoch, end_epoch) for a job's execution window.
+
+    Uses artifact directory ctime as the start proxy (files are copied at
+    submission time) and the log file mtime + 60 s buffer as the end proxy.
+    The buffer accounts for profiles captured after the last log write
+    (e.g. killed jobs with periodic profiling).  Kept small to avoid
+    overlapping with back-to-back SLURM jobs on the same nodes.
+    """
+    start: float | None = None
+    art_dir = job_dir / "artifact"
+    if art_dir.is_dir():
+        try:
+            start = art_dir.stat().st_ctime
+        except OSError:
+            pass
+    if start is None and log_file:
+        try:
+            start = log_file.stat().st_ctime
+        except OSError:
+            pass
+    if start is None:
+        return None
+
+    end: float = time.time()
+    if log_file:
+        try:
+            end = log_file.stat().st_mtime + _TIME_WINDOW_END_BUFFER_SECS
+        except OSError:
+            pass
+    return (start, end)
+
+
+_PROFILE_SESSION_WINDOW_SECS = 60
+
+
 def _find_xplane_files(
     job_dir: Path,
     tensorboard_dir: Path | None = None,
+    job_time_window: tuple[float, float] | None = None,
 ) -> list[Path]:
     """Find all *.xplane.pb files, falling back to an external tensorboard_dir.
 
     First searches *job_dir* recursively.  If nothing is found and an
     external *tensorboard_dir* is provided (parsed from the log), searches
-    ``<tensorboard_dir>/plugins/profile/`` instead.
+    ``<tensorboard_dir>/plugins/profile/`` instead, filtering timestamp
+    directories to those within the job's execution window to avoid
+    picking up profiles from other jobs sharing the same directory.
     """
     found = sorted(job_dir.rglob("*.xplane.pb"))
     if found:
@@ -210,7 +262,16 @@ def _find_xplane_files(
     if tensorboard_dir:
         profile_root = tensorboard_dir / "plugins" / "profile"
         if profile_root.is_dir():
-            found = sorted(profile_root.rglob("*.xplane.pb"))
+            ts_dirs = sorted(d for d in profile_root.iterdir() if d.is_dir())
+            if job_time_window:
+                job_start, job_end = job_time_window
+                ts_dirs = [
+                    d for d in ts_dirs
+                    if (ep := _parse_profile_timestamp(d.name)) is not None
+                    and job_start <= ep <= job_end
+                ]
+            for d in ts_dirs:
+                found.extend(sorted(d.glob("*.xplane.pb")))
     return found
 
 
@@ -240,13 +301,22 @@ def slurm_nodelist_first(nodelist: str) -> str:
 
 
 def _parse_node0_hostname(log_text: str | None) -> str | None:
-    """Extract node 0's hostname from SLURM_JOB_NODELIST in the log."""
+    """Extract node 0's hostname from the log header.
+
+    Matches ``SLURM_JOB_NODELIST=`` (Slurm jobs via ``_job.sbatch``) or
+    ``JOB_NODELIST=`` (local runs via ``run_setup.sh``).  Falls back to
+    ``HOSTNAME=`` for legacy logs.
+    """
     if not log_text:
         return None
-    m = RE_NODELIST.search(log_text[:2000])
-    if not m:
-        return None
-    return slurm_nodelist_first(m.group(1).strip())
+    header = log_text[:2000]
+    m = RE_NODELIST.search(header)
+    if m:
+        return slurm_nodelist_first(m.group(1).strip())
+    m = re.search(r"^HOSTNAME\s*=\s*(\S+)", header, re.MULTILINE)
+    if m:
+        return m.group(1).strip()
+    return None
 
 
 def _find_buffer_assignment(job_dir: Path) -> Path | None:
@@ -491,6 +561,7 @@ def _build_analysis_json(
     log_text: str | None,
     steps: list[dict] | None,
     tensorboard_dir: Path | None = None,
+    job_time_window: tuple[float, float] | None = None,
 ) -> dict:
     """Build the analysis.json content from parsed data.
 
@@ -518,6 +589,9 @@ def _build_analysis_json(
         result["step_begin"] = unique_steps[0]
         result["step_end"] = unique_steps[-1]
 
+    if log_text and RE_RAY_ACTOR.search(log_text):
+        result["uses_ray"] = True
+
     # Artifact paths (relative to job_dir where possible)
     if job_dir:
         artifacts: dict = {}
@@ -531,7 +605,7 @@ def _build_analysis_json(
         if hlo:
             artifacts["hlo_file"] = str(hlo.relative_to(job_dir))
 
-        xplane = _find_xplane_files(job_dir, tensorboard_dir)
+        xplane = _find_xplane_files(job_dir, tensorboard_dir, job_time_window)
         if xplane:
             local = [str(f.relative_to(job_dir)) for f in xplane
                      if f.is_relative_to(job_dir)]
@@ -818,6 +892,7 @@ def process_job(
     # ── Resolve tensorboard_dir from log ──
     outputs_dir = job_dir.parent if job_dir else None
     tensorboard_dir = _extract_tensorboard_dir(log_text, outputs_dir) if outputs_dir else None
+    jtw = _job_time_window(job_dir, log_file) if job_dir else None
     if tensorboard_dir and job_dir and not tensorboard_dir.is_relative_to(job_dir):
         _step(f"External tensorboard_dir: {tensorboard_dir}")
 
@@ -870,7 +945,7 @@ def process_job(
     if skip_tracelens:
         _skip("TraceLens", "skipped (--skip-tracelens)")
     elif job_dir:
-        xplane_files = _find_xplane_files(job_dir, tensorboard_dir)
+        xplane_files = _find_xplane_files(job_dir, tensorboard_dir, jtw)
         if xplane_files:
             # SPMD: all hosts run the same program, so we only analyze
             # node 0's xplane.  Distributed writes may scatter hosts across
@@ -915,7 +990,7 @@ def process_job(
     # ── Save analysis.json ──
     if job_dir and job_dir.is_dir():
         analysis = _build_analysis_json(
-            job_dir, log_file, log_text, steps, tensorboard_dir,
+            job_dir, log_file, log_text, steps, tensorboard_dir, jtw,
         )
         _save_analysis_json(job_dir, analysis)
 
@@ -926,7 +1001,7 @@ def process_job(
         artifact_names.append("TGS data")
     if job_dir and _find_hlo_file(job_dir):
         artifact_names.append("HLO dump")
-    if job_dir and _find_xplane_files(job_dir, tensorboard_dir):
+    if job_dir and _find_xplane_files(job_dir, tensorboard_dir, jtw):
         artifact_names.append("xplane trace")
     if artifact_names:
         print(f"  {GREEN}Available artifacts:{RESET} {', '.join(artifact_names)}")
@@ -1033,7 +1108,22 @@ examples:
     return parser
 
 
-_DASHBOARD_PORT = 8080
+_DASHBOARD_PREFERRED_PORT = 8080
+_DASHBOARD_PORT_RANGE = range(8080, 8100)
+
+
+def _find_dashboard_port() -> int | None:
+    """Scan a small port range to find a running perf_server."""
+    for port in _DASHBOARD_PORT_RANGE:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.3)
+            s.connect(("127.0.0.1", port))
+            s.close()
+            return port
+        except OSError:
+            continue
+    return None
 
 
 def _dashboard_hint() -> None:
@@ -1041,19 +1131,16 @@ def _dashboard_hint() -> None:
     server_script = SCRIPT_DIR / "perf_server.py"
     if not server_script.exists():
         return
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(0.3)
-        s.connect(("127.0.0.1", _DASHBOARD_PORT))
-        s.close()
+    port = _find_dashboard_port()
+    if port is not None:
         print(
             f"\n{CYAN}Dashboard:{RESET} "
-            f"http://0.0.0.0:{_DASHBOARD_PORT}  (running)"
+            f"http://0.0.0.0:{port}  (running)"
         )
-    except OSError:
+    else:
         print(
             f"\n{CYAN}Start dashboard:{RESET}  "
-            f"utils/perf_server.py --host 0.0.0.0 --port {_DASHBOARD_PORT}"
+            f"utils/perf_server.py --host 0.0.0.0"
         )
 
 

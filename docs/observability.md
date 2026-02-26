@@ -27,21 +27,23 @@ Three dashboards are accessible via SSH tunnel while the job runs:
 | Dashboard | What it shows | Port |
 |-----------|--------------|------|
 | [Ray](https://www.ray.io/) Dashboard | Actor status, live stack traces, flame graphs | 8265 |
-| Prometheus | GPU thermals/power/clocks/VRAM, RAS errors, TCP retransmits, RDMA counters, training scalars (loss, LR, grad norms, throughput) | 9090 |
+| Prometheus | GPU thermals/power/clocks/VRAM, RAS errors, TCP retransmits, RDMA counters, training scalars (loss, LR, grad norms, throughput) | 9190 (auto-increments if occupied) |
 | TensorBoard | Training loss curves, learning rate schedules | 6006 |
 
 ### SSH tunnel
 
-The job output prints SSH tunnel instructions (both hostname and IP). Example:
+The job output prints SSH tunnel instructions (both hostname and IP). The Prometheus port defaults to 9190 but auto-increments if occupied (check the log for the actual port). Example:
 
 ```
 SSH tunnel (hostname):
-  ssh -L 8265:node001:8265 -L 6006:node001:6006 -L 9090:node001:9090 root@login01
+  ssh -L 8265:node001:8265 -L 6006:node001:6006 -L 9190:node001:9190 root@login01
 SSH tunnel (IP):
-  ssh -L 8265:node001:8265 -L 6006:node001:6006 -L 9090:node001:9090 root@203.0.113.10
+  ssh -L 8265:node001:8265 -L 6006:node001:6006 -L 9190:node001:9190 root@203.0.113.10
 ```
 
-Then open `http://localhost:8265`, `http://localhost:6006`, or `http://localhost:9090`.
+Then open `http://localhost:8265`, `http://localhost:6006`, or `http://localhost:9190` in your browser.
+
+**Important:** The SSH tunnel binds these ports on your **local machine** (where you run the `ssh` command). The remote head node (`node001` in this example) already has Prometheus listening. If you need to query from another cluster node, use `http://node001:9190` directly — do not assume `localhost:9190` on that node points to the job's Prometheus.
 
 If a port is occupied locally (e.g., monitoring multiple jobs), change the first port number in `-L`. For example, `-L 18265:node001:8265` then access `http://localhost:18265`.
 
@@ -56,9 +58,14 @@ $JOB_WORKSPACE/
     artifact -> ...                           # Artifact at submit time
     log -> ../12345-JAX-llama2-70b.log        # Symlink to the job log
     prometheus/                               # Prometheus time-series data
+      prometheus.log                          # Prometheus process log (startup, errors, restarts)
     ray_logs/
       node001/session_*/logs/                 # Head node: raylet, GCS, dashboard, worker logs
       node002/session_*/logs/                 # Worker node logs
+      ...
+    metrics_exporter/                         # Metrics exporter logs (one per node)
+      node001.log
+      node002.log
       ...
     core.12345.*.node002.py_xla_execute.515   # Core dumps (if any)
     <training outputs>
@@ -142,14 +149,19 @@ Training metrics (loss, learning rate, gradient norms, throughput) traditionally
 # Loss over time
 tb_learning_loss{host="node001"}
 
-# Correlate loss with GPU temperature
-tb_learning_loss{host="node001"} and on() hw_gpu_temperature_celsius{host="node001", gpu="0"}
+# Step time spikes — which steps took abnormally long?
+tb_perf_step_time_seconds > 2 * avg_over_time(tb_perf_step_time_seconds[30m])
 
-# Detect throughput regression (>10% drop from moving average)
-tb_perf_per_device_tokens_per_sec < 0.9 * avg_over_time(tb_perf_per_device_tokens_per_sec[10m])
+# At the same wall-clock time, check system-level contention sources:
+hw_gpu_temperature_celsius{host="node001"}            # Thermal throttling?
+rate(hw_tcp_retransmits_total{host="node001"}[5m])    # Network issues?
+hw_procs_running{host="node001"}                      # CPU contention?
+hw_io_pressure_full_pct{host="node001"}               # Storage stalls?
 ```
 
 **Anti-staleness fills.** During long idle periods (e.g. checkpoint saves), the plugin periodically re-emits the last known data to keep `tb_*` series alive in Prometheus. Use `tb_metrics_plugin_staleness_fill == 0` to exclude synthetic fills from analysis queries.
+
+**Best-effort bridge.** The `tb_*` metrics in Prometheus are best-effort. Gaps can occur when another plugin hangs and blocks the exporter cycle, when the exporter crashes and restarts, or when Prometheus rejects samples whose timestamps are too old after TSDB compaction. The raw TensorBoard event file (`<job_dir>/tensorboard/events.out.tfevents.*`) is always the ground truth for training scalars.
 
 ## Customizing metrics
 
@@ -167,6 +179,7 @@ To add a new metric:
 - **Idle replay.** When a state-using plugin outputs only a STATE line (no metrics), the exporter replays the last cached metrics automatically — skip expensive work when nothing changed.
 - **Cache invalidation.** Emit `# STATE __NONE__...` when the data source is gone — the exporter clears the cache so stale metrics are not replayed.
 - **Permanent skip.** Exit with code 99 to tell the exporter to never invoke the plugin again (e.g. wrong node type, feature disabled).
+- **Execution timeout.** Each plugin invocation is killed if it exceeds the poll interval (~10s). This prevents a hung plugin (e.g., a sysfs read stuck in kernel D-state) from blocking other plugins. Timed-out invocations produce no output; the exporter replays the last cached metrics for that plugin.
 
 **Built-in plugins:**
 
@@ -211,4 +224,4 @@ No heavier alternative (InfluxDB, OpenTelemetry) is justified for this use case.
 
 Ray provides the breadth; the [plugin system](#customizing-metrics) provides the depth. Together they cover every metric class in one Prometheus TSDB — the [ground truth data layer](#unified-tsdb-as-ground-truth) for automated reasoning.
 
-The entire stack is self-contained in the container: Ray is `pip install`'d and Prometheus is downloaded as a single binary at startup — no cluster-wide pre-installation required. Collected metrics are written to `JOB_WORKSPACE` alongside other job outputs, so there is no separate server to deploy or maintain. Falls back to non-Ray mode if the cluster fails to start.
+The entire stack is self-contained in the container: Ray is `pip install`'d and Prometheus is downloaded as a single binary at startup — no cluster-wide pre-installation required. Collected metrics are written to `JOB_WORKSPACE` alongside other job outputs, so there is no separate server to deploy or maintain. Falls back to non-Ray mode if the cluster fails to start (clears `USE_RAY` so `_train.sh` launches MaxText directly). Ray startup failures are logged to the job output for diagnosis.

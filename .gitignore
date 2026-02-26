@@ -4,6 +4,8 @@ container_env.local.sh
 
 outputs/
 
+.claude/
+
 *.trace.json*
 
 .nfs*

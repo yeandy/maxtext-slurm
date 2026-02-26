@@ -4,7 +4,7 @@ Toolkit for launching and observing [MaxText](https://github.com/AI-Hypercompute
 
 An extensible [AI skill framework](skills/) equips AI assistants with out-of-the-box domain expertise across the full training lifecycle — from profiling and performance analysis to production incident diagnosis — with more skills added over time.
 
-This is a **reference implementation** of a [layered](docs/architecture.md) launch architecture where each tier — orchestration, container, training, and even GPU vendor — can be [adapted independently](docs/extensibility.md) without cascading changes. See [Architecture](docs/architecture.md) for the full training flow and [Extensibility](docs/extensibility.md) for what each swap involves.
+This is a **reference implementation** of a [layered](docs/architecture.md) launch architecture where each tier — orchestration, container, training — can be [adapted independently](docs/extensibility.md) without cascading changes, including swapping the GPU vendor. See [Architecture](docs/architecture.md) for the full training flow and [Extensibility](docs/extensibility.md) for what each swap involves.
 
 ## Quickstart
 
@@ -42,7 +42,7 @@ RAY=1 submit.sh 70b -N 8
 |-----------|--------------|------|
 | TensorBoard | Training loss curves, learning rate schedules | 6006 |
 | Ray Dashboard | Actor status, live stack traces, flame graphs | 8265 |
-| Prometheus | GPU, host, network, and training metrics — unified TSDB | 9090 |
+| Prometheus | GPU, host, network, and training metrics — unified TSDB | 9190 (auto-increments if occupied) |
 
 ### Post-run browsing
 
@@ -61,22 +61,22 @@ utils/slurm_job_monitor.sh -j <slurm_job_id>
 
 See [Observability](docs/observability.md) for the full story.
 
-## AI-assisted workflows
+## Agentic workflows
 
-The `skills/` directory contains structured instructions for AI coding assistants ([Cursor](https://cursor.com/), [Claude Code](https://docs.anthropic.com/en/docs/claude-code)). See [`skills/README.md`](skills/README.md) for the full list.
+The [`skills/`](skills/) directory contains structured instructions for AI agents ([Cursor](https://cursor.com/), [Claude Code](https://docs.anthropic.com/en/docs/claude-code)). Each skill encodes the methodology from very senior systems engineers — not just what commands to run, but how to interpret results, distinguish symptoms from root causes, and trace causal chains across the full stack. Skills ship for performance analysis, job failure triage, and TSDB-based incident diagnosis. See [`skills/README.md`](skills/README.md) for the full list.
 
 ## Learn more
 
 **Launch**
 
-| | |
+| Topic | Description |
 |---|---|
 | [Job Submission](docs/job-submission.md) | `JOB_WORKSPACE`, full `submit.sh` syntax, local runs, checkpointing, model aliases, environment config, artifacts |
 | [Model Configs](docs/model-configs.md) | Available models, adding new configs (patterns, section layout), resolution rules, CLI overrides |
 
 **Observe**
 
-| | |
+| Topic | Description |
 |---|---|
 | [Observability](docs/observability.md) | Real-time monitoring, post-run diagnostics, unified TSDB, custom metrics plugins, design rationale |
 | [Notifications](docs/notifications.md) | Telegram setup, programmable messaging (`telegram_bot.sh`), automated job monitoring |
@@ -86,7 +86,7 @@ The `skills/` directory contains structured instructions for AI coding assistant
 
 **Adapt**
 
-| | |
+| Topic | Description |
 |---|---|
 | [Architecture](docs/architecture.md) | Training flow, artifact system, observability pipeline, orchestrator extensibility |
 | [Extensibility](docs/extensibility.md) | Layer map; how to swap schedulers, runtimes, training frameworks, or GPU vendors |

@@ -11,8 +11,8 @@
 #   utils/prometheus.sh install
 #   utils/prometheus.sh list [<workspace>]
 
-PROMETHEUS_PORT=${PROMETHEUS_PORT:-9090}
-RAY_METRICS_PORT=${RAY_METRICS_PORT:-8080}
+PROMETHEUS_PORT=${PROMETHEUS_PORT:-9190}
+RAY_METRICS_PORT=${RAY_METRICS_PORT:-55080}
 EXPORTER_PORT=${EXPORTER_PORT:-9400}
 
 _PROM_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -52,6 +52,10 @@ _prom_bin() {
 }
 
 # Start Prometheus with live scraping (called inside a running job).
+# Uses the generic _run_with_watchdog (from ray_cluster.sh) to restart on crash.
+# On restart Prometheus replays the WAL and resumes scraping — only a few seconds
+# of data are lost.  Logs go to $PROMETHEUS_DATA_DIR/prometheus.log so they
+# survive job termination and appear in the job directory for diagnosis.
 start_prometheus() {
     install_prometheus || return 0
 
@@ -87,18 +91,55 @@ scrape_configs:
       - targets: [${hw_targets}]
 EOF
 
-    # Write TSDB directly to persistent storage.  Inside Docker, /outputs is
-    # mounted from $JOB_WORKSPACE (or $SCRIPT_DIR/outputs) on the host.  This
-    # way metrics survive even if the job is killed abruptly (preemption, OOM, etc.).
     PROMETHEUS_DATA_DIR="/outputs/${JOB_DIR:-unknown}/prometheus"
     mkdir -p "$PROMETHEUS_DATA_DIR"
+    local prom_log="$PROMETHEUS_DATA_DIR/prometheus.log"
 
-    "$prom_bin" --config.file=/tmp/ray_prometheus.yml \
-        --web.listen-address=":${PROMETHEUS_PORT}" \
-        --storage.tsdb.path="$PROMETHEUS_DATA_DIR" \
-        --storage.tsdb.retention.time=30d &>/dev/null &
-    echo "[Prometheus] Started on port ${PROMETHEUS_PORT} (ray: ${ray_targets}; node_hw: ${hw_targets})"
+    # Common flags (reused for port discovery and the watchdog launch).
+    local -a prom_flags=(
+        --config.file=/tmp/ray_prometheus.yml
+        --storage.tsdb.path="$PROMETHEUS_DATA_DIR"
+        --storage.tsdb.retention.time=30d
+    )
+
+    # --- Probe for a usable port (launch briefly, check, kill) ---
+    local actual_port="$PROMETHEUS_PORT"
+    local max_retries=5
+    local prom_pid
+    for ((attempt = 0; attempt <= max_retries; attempt++)); do
+        "$prom_bin" "${prom_flags[@]}" \
+            --web.listen-address=":${actual_port}" >>"$prom_log" 2>&1 &
+        prom_pid=$!
+        sleep 2
+        if kill -0 "$prom_pid" 2>/dev/null; then
+            break
+        fi
+        if [[ $attempt -lt $max_retries ]]; then
+            actual_port=$((actual_port + 1))
+            echo "[Prometheus] Port $((actual_port - 1)) occupied, trying ${actual_port}..."
+        else
+            echo "[Prometheus] FAILED: could not bind any port in range ${PROMETHEUS_PORT}-${actual_port}" >&2
+            tail -20 "$prom_log" >&2
+            rm -rf "$PROMETHEUS_DATA_DIR"
+            return 1
+        fi
+    done
+    kill "$prom_pid" 2>/dev/null; wait "$prom_pid" 2>/dev/null || true
+    rm -f "$PROMETHEUS_DATA_DIR/lock"
+
+    if [[ "$actual_port" != "$PROMETHEUS_PORT" ]]; then
+        echo "[Prometheus] WARNING: port ${PROMETHEUS_PORT} was occupied; using ${actual_port} instead"
+        PROMETHEUS_PORT="$actual_port"
+    fi
+    echo "[Prometheus] Started on port ${actual_port} (ray: ${ray_targets}; node_hw: ${hw_targets})"
     echo "[Prometheus] TSDB -> ${PROMETHEUS_DATA_DIR} (persistent)"
+    echo "[Prometheus] Log  -> ${prom_log}"
+
+    # Watchdog restarts Prometheus on crash. The --on-restart hook removes the
+    # stale TSDB lock file (safe — the old process is dead).
+    _run_with_watchdog "Prometheus" "$prom_log" \
+        --on-restart "rm -f '$PROMETHEUS_DATA_DIR/lock'" -- \
+        "$prom_bin" "${prom_flags[@]}" --web.listen-address=":${actual_port}"
 }
 
 # Start a read-only Prometheus against persisted TSDB data.
@@ -132,8 +173,8 @@ view_prometheus() {
     prom_bin=$(_prom_bin) || return 1
 
     # Minimal config — no scraping, just serve the existing data.
-    local cfg
-    cfg=$(mktemp /tmp/prom_view_XXXXXX.yml)
+    # Deterministic path (keyed on port) so it's reused, not accumulated.
+    local cfg="/tmp/prom_view_${port}.yml"
     cat > "$cfg" <<'YAML'
 global:
   scrape_interval: 999h
@@ -151,12 +192,13 @@ YAML
     echo "[Prometheus] If running on a remote host, tunnel first (use hostname or IP, whichever works):"
     echo "  ssh -L ${port}:localhost:${port} ${host_hostname}"
     echo "  ssh -L ${port}:localhost:${port} ${host_ip}"
-    "$prom_bin" --config.file="$cfg" \
+    # exec replaces bash with prometheus — one fewer process, and killing the
+    # PID targets prometheus directly instead of orphaning it as a child.
+    exec "$prom_bin" --config.file="$cfg" \
         --web.listen-address=":${port}" \
         --storage.tsdb.path="$data_dir" \
         --storage.tsdb.retention.time=10y \
         --query.lookback-delta=15m
-    rm -f "$cfg" 2>/dev/null
 }
 
 # List job directories that contain Prometheus data.

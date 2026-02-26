@@ -16,13 +16,16 @@ export RAY_event_stats_print_interval_ms=${RAY_event_stats_print_interval_ms:-0}
 export RAY_health_check_period_ms=${RAY_health_check_period_ms:-30000}            # 30s (default ~10s)
 export RAY_num_heartbeats_timeout=${RAY_num_heartbeats_timeout:-20}               # tolerate slower heartbeats
 
-RAY_PORT=${RAY_PORT:-6379}
+# RAY_PORT must be set by the caller (run_setup.sh, _job.sbatch, or
+# _container.sh --env).  No default — prevents silent fallback to a
+# potentially occupied port.
 RAY_HEAD_IP="${JAX_COORDINATOR_IP:-localhost}"
-RAY_METRICS_PORT=8080
-PROMETHEUS_PORT=9090
+RAY_METRICS_PORT=55080
+PROMETHEUS_PORT=9190
 
 # Persist Ray logs to the shared job output directory so they survive crashes.
-# Inside Docker, /outputs is mounted from $JOB_WORKSPACE (or $SCRIPT_DIR/outputs) on the host.
+# Inside Docker, /outputs is mounted from $JOB_WORKSPACE
+# (or $SCRIPT_DIR/outputs) on the host.
 # NOTE: We do NOT use --temp-dir for persistence because long paths exceed the
 # 108-char Unix socket limit (sockaddr_un).  Instead, Ray uses the default
 # /tmp/ray temp dir and we symlink its log directory to persistent storage.
@@ -43,6 +46,43 @@ _persist_ray_logs() {
 
 export RAY_PROMETHEUS_HOST="http://localhost:${PROMETHEUS_PORT}"
 
+# Generic watchdog: launch a command in a background subshell and restart on crash.
+# Usage: _run_with_watchdog <label> <log_file> [--on-restart <cmd>] -- <command> [args...]
+#   - The command is launched INSIDE the subshell so wait() always operates on a
+#     direct child (launching outside would make wait() return 127 immediately).
+#   - On non-zero exit: log, run on-restart hook, sleep 5s, restart.
+#   - On clean exit (0) or signal death (SIGTERM=143, SIGINT=130): stop.
+#   - Gives up after 50 restarts.
+_run_with_watchdog() {
+    local label="$1"; shift
+    local log_file="$1"; shift
+    local on_restart=""
+    if [[ "${1:-}" == "--on-restart" ]]; then
+        shift; on_restart="$1"; shift
+    fi
+    [[ "${1:-}" == "--" ]] && shift
+
+    (
+        local restarts=0
+        while true; do
+            "$@" >>"$log_file" 2>&1 &
+            local pid=$!
+            wait "$pid" 2>/dev/null
+            local exit_code=$?
+            # exit 0 = clean shutdown; 143 = SIGTERM; 130 = SIGINT (job teardown)
+            [[ $exit_code -eq 0 || $exit_code -eq 143 || $exit_code -eq 130 ]] && break
+            restarts=$((restarts + 1))
+            if [[ $restarts -gt 50 ]]; then
+                echo "[$(date -u +%FT%TZ)] [$label] Watchdog: too many restarts (50), giving up" >>"$log_file"
+                break
+            fi
+            echo "[$(date -u +%FT%TZ)] [$label] Watchdog: exited with code $exit_code, restart #$restarts" >>"$log_file"
+            [[ -n "$on_restart" ]] && eval "$on_restart"
+            sleep 5
+        done
+    ) &
+}
+
 # Prometheus helpers (install_prometheus, start_prometheus, view_prometheus, …)
 source "$(dirname "${BASH_SOURCE[0]}")/prometheus.sh"
 
@@ -51,9 +91,11 @@ _METRICS_EXPORTER_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/metrics_exporter.sh"
 
 start_metrics_exporter() {
     if [[ -x "$_METRICS_EXPORTER_SCRIPT" ]]; then
-        local log_file="/tmp/metrics_exporter.log"
-        "$_METRICS_EXPORTER_SCRIPT" --port "${EXPORTER_PORT:-9400}" --interval 10 \
-            >>"$log_file" 2>&1 &
+        local log_dir="/outputs/${JOB_DIR:-unknown}/metrics_exporter"
+        local log_file="$log_dir/$(hostname -s).log"
+        mkdir -p "$log_dir" 2>/dev/null || log_file="/tmp/metrics_exporter.log"
+        _run_with_watchdog "Metrics Exporter" "$log_file" -- \
+            "$_METRICS_EXPORTER_SCRIPT" --port "${EXPORTER_PORT:-9400}" --interval 10
         echo "[Metrics Exporter] Started on port ${EXPORTER_PORT:-9400} on $(hostname -s) (log: $log_file)"
     else
         echo "[Metrics Exporter] Script not found: $_METRICS_EXPORTER_SCRIPT" >&2
@@ -88,11 +130,14 @@ install_ray() {
 
 start_ray_head() {
     echo "[Ray] Starting HEAD on $(hostname):${RAY_PORT}"
-    ray start --head --port=$RAY_PORT \
+    if ! ray start --head --port=$RAY_PORT \
         --num-cpus=1 \
         --dashboard-host=0.0.0.0 --dashboard-port=8265 \
         --metrics-export-port=$RAY_METRICS_PORT \
-        --disable-usage-stats &>/dev/null || return 1
+        --disable-usage-stats 2>&1; then
+        echo "[Ray] HEAD failed to start (port $RAY_PORT, dashboard 8265)" >&2
+        return 1
+    fi
     _persist_ray_logs
 
     for _ in {1..30}; do ray status &>/dev/null && return 0; sleep 2; done
@@ -166,8 +211,18 @@ start_ray_cluster() {
     install_ray || return 1
     _install_pyspy_subprocess_wrapper
     ray stop --force &>/dev/null || true
-    pkill -f "prometheus" &>/dev/null || true
+    # Kill stale Prometheus from a prior run of THIS job (match the TSDB path).
+    # Avoid 'pkill -f prometheus' which would kill unrelated instances (e.g.,
+    # cluster-level monitors or other jobs' Prometheus).
+    if [[ -n "${JOB_DIR:-}" ]]; then
+        pkill -f "prometheus.*${JOB_DIR}/prometheus" &>/dev/null || true
+    else
+        pkill -f "prometheus.*storage.tsdb" &>/dev/null || true
+    fi
     pkill -f "metrics_exporter.sh" &>/dev/null || true
+    pkill -f "node_hw_metrics.prom" &>/dev/null || true
+    # Wait for ports to be released after SIGKILL
+    sleep 2
 
     # Node metrics exporter runs on EVERY node (not just head)
     start_metrics_exporter
@@ -175,6 +230,8 @@ start_ray_cluster() {
     if [[ ${NODE_RANK:-0} -eq 0 ]]; then
         start_ray_head || return 1
         start_prometheus
+        # Re-export in case start_prometheus changed PROMETHEUS_PORT due to conflict
+        export RAY_PROMETHEUS_HOST="http://localhost:${PROMETHEUS_PORT}"
     else
         start_ray_worker
     fi
@@ -182,8 +239,13 @@ start_ray_cluster() {
 
 stop_ray_cluster() {
     ray stop --force &>/dev/null || true
-    pkill -f "prometheus" &>/dev/null || true
+    if [[ -n "${JOB_DIR:-}" ]]; then
+        pkill -f "prometheus.*${JOB_DIR}/prometheus" &>/dev/null || true
+    else
+        pkill -f "prometheus.*storage.tsdb" &>/dev/null || true
+    fi
     pkill -f "metrics_exporter.sh" &>/dev/null || true
+    pkill -f "node_hw_metrics.prom" &>/dev/null || true
     pkill -f "tensorboard" &>/dev/null || true
 }
 
@@ -210,10 +272,10 @@ print_ray_info() {
     cat <<EOF
 ==============================================
 SSH tunnel from your local machine (use hostname or IP, whichever works):
-  ssh -L 8265:${host}:8265 -L 6006:${host}:6006 -L 9090:${host}:9090 ${login_hostname}
-  ssh -L 8265:${host}:8265 -L 6006:${host}:6006 -L 9090:${host}:9090 ${login_ip}
+  ssh -L 8265:${host}:8265 -L 6006:${host}:6006 -L ${PROMETHEUS_PORT}:${host}:${PROMETHEUS_PORT} ${login_hostname}
+  ssh -L 8265:${host}:8265 -L 6006:${host}:6006 -L ${PROMETHEUS_PORT}:${host}:${PROMETHEUS_PORT} ${login_ip}
 
-Then open localhost:8265/6006/9090 in your browser:
+Then open in your browser:
   Ray Dashboard:  http://localhost:8265
   TensorBoard:    http://localhost:6006
   Prometheus:     http://localhost:${PROMETHEUS_PORT}
@@ -226,7 +288,8 @@ To inspect after the job ends:
 Ray logs are persisted per node under:
   <JOB_WORKSPACE>/<job>/ray_logs/<hostname>/session_*/logs/
 
-Tip: Port conflict when monitoring multiple jobs? Change local port: -L 18265:... -> localhost:18265
+Tip: Port conflict when monitoring multiple jobs?
+  Change local port: -L 18265:... -> localhost:18265
 
 Debug:
   srun --jobid=\${SLURM_JOB_ID} --pty bash

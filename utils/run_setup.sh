@@ -93,9 +93,11 @@ JAX_PORT="${JAX_COORDINATOR_PORT:-$(pick_free_port)}"
 export JAX_COORDINATOR_PORT="$JAX_PORT"
 echo "JAX_COORDINATOR_PORT=$JAX_PORT"
 
-# Pick a random port for Ray head GCS (only when Ray is enabled)
+# Pick a free port for Ray head GCS (only when Ray is enabled).
+# Always pick fresh — inherited RAY_PORT (e.g. from a previous run's
+# container env) may be stale/occupied.
 if [[ "${USE_RAY:-false}" == "true" ]]; then
-    RAY_PORT="${RAY_PORT:-$(pick_free_port "$JAX_PORT")}"
+    RAY_PORT=$(pick_free_port "$JAX_PORT")
     export RAY_PORT
     echo "RAY_PORT=$RAY_PORT"
 fi
@@ -118,11 +120,11 @@ ln -snf "../$JOB_DIR.log" "$JOB_WORKSPACE/$JOB_DIR/log"
     echo "JOB_NAME=$JOB_NAME"
     echo "NNODES=$NNODES"
     echo "NODE_RANK=$NODE_RANK"
-    echo "HOSTNAME=$(hostname)"
+    echo "JOB_NODELIST=$(hostname)"
     echo "PASSTHROUGH_ARGS=\"${PASSTHROUGH_ARGS[*]}\""
     echo "MODEL_NAME=$MODEL_NAME"
-    [[ -n "$MODEL_NAME_ALIAS" ]] && echo "MODEL_NAME_ALIAS=$MODEL_NAME_ALIAS"
-    [[ -n "$EXP_TAG" ]] && echo "EXP_TAG=$EXP_TAG"
+    if [[ -n "$MODEL_NAME_ALIAS" ]]; then echo "MODEL_NAME_ALIAS=$MODEL_NAME_ALIAS"; fi
+    if [[ -n "$EXP_TAG" ]]; then echo "EXP_TAG=$EXP_TAG"; fi
 } | tee "$LOG_FILE"
 
 # Hold an append-mode fd to the log file. Unlike >> "$LOG_FILE" (which opens

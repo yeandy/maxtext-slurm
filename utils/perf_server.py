@@ -17,6 +17,7 @@ import argparse
 import csv
 import json
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -164,6 +165,7 @@ def _job_summary(j: dict, dir_name: str = "", include_per_step: bool = False) ->
         "computation_pct": tl.get("computation_time"),
         "exposed_comm_pct": tl.get("exposed_comm_time"),
         "idle_pct": tl.get("idle_time"),
+        "uses_ray": j.get("uses_ray", False),
     }
     if include_per_step:
         nn = j.get("num_nodes") or 1
@@ -361,7 +363,12 @@ def _slurm_nodelist_first(nodelist: str) -> str:
 
 
 def _node0_hostname(job_dir: Path) -> str | None:
-    """Extract node 0's hostname from the job log's SLURM_JOB_NODELIST."""
+    """Extract node 0's hostname from the log header.
+
+    Matches ``SLURM_JOB_NODELIST=`` (Slurm jobs via ``_job.sbatch``) or
+    ``JOB_NODELIST=`` (local runs via ``run_setup.sh``).  Falls back to
+    ``HOSTNAME=`` for legacy logs.
+    """
     log_file = _find_log_file(job_dir)
     if not log_file:
         return None
@@ -369,10 +376,13 @@ def _node0_hostname(job_dir: Path) -> str | None:
         header = log_file.read_text(errors="replace")[:2000]
     except OSError:
         return None
-    m = re.search(r"^SLURM_JOB_NODELIST\s*=\s*(.+)", header, re.MULTILINE)
-    if not m:
-        return None
-    return _slurm_nodelist_first(m.group(1).strip())
+    m = re.search(r"^(?:SLURM_JOB_NODELIST|JOB_NODELIST)\s*=\s*(.+)", header, re.MULTILINE)
+    if m:
+        return _slurm_nodelist_first(m.group(1).strip())
+    m = re.search(r"^HOSTNAME\s*=\s*(\S+)", header, re.MULTILINE)
+    if m:
+        return m.group(1).strip()
+    return None
 
 
 def _find_tracelens_profiles(job_dir: Path) -> list[str]:
@@ -517,6 +527,124 @@ def _get_external_profile_dir(job_dir: Path) -> Path | None:
     return None
 
 
+def _parse_profile_timestamp(name: str) -> float | None:
+    """Parse a profile directory name like ``2026_02_18_08_56_06`` to epoch seconds."""
+    from datetime import datetime, timezone
+    try:
+        dt = datetime.strptime(name, "%Y_%m_%d_%H_%M_%S").replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except ValueError:
+        return None
+
+
+_PROFILE_SESSION_WINDOW_SECS = 60
+
+
+_TIME_WINDOW_END_BUFFER_SECS = 60
+
+
+def _job_time_window(job_dir: Path) -> tuple[float, float] | None:
+    """Return (start_epoch, end_epoch) for a job's execution window.
+
+    Uses artifact directory ctime as the start proxy (files are copied at
+    submission time) and the log file mtime + 60 s buffer as the end proxy.
+    The buffer accounts for profiles captured after the last log write
+    (e.g. killed jobs with periodic profiling).  Kept small to avoid
+    overlapping with back-to-back SLURM jobs on the same nodes.
+    """
+    import time
+
+    start: float | None = None
+    art_dir = job_dir / "artifact"
+    if art_dir.is_dir():
+        try:
+            start = art_dir.stat().st_ctime
+        except OSError:
+            pass
+
+    if start is None:
+        log_file = _find_log_file(job_dir)
+        if log_file:
+            try:
+                start = log_file.stat().st_ctime
+            except OSError:
+                pass
+    if start is None:
+        return None
+
+    end: float = time.time()
+    log_file = _find_log_file(job_dir)
+    if log_file:
+        try:
+            end = log_file.stat().st_mtime + _TIME_WINDOW_END_BUFFER_SECS
+        except OSError:
+            pass
+
+    return (start, end)
+
+
+def _job_profile_timestamps(job_dir: Path) -> set[str] | None:
+    """Return the set of profile timestamps that belong to this job.
+
+    Applies two filters in combination:
+    1. **Time window**: profile timestamp must fall within the job's
+       execution window (artifact ctime → log mtime).
+    2. **Session grouping**: once anchor timestamps are found (via
+       node-0 xplane match), sibling directories within 60 s are
+       included (nodes in a session start profiling seconds apart).
+
+    Falls back to tracelens-only timestamps, then to None.
+    """
+    ext_dir = _get_external_profile_dir(job_dir)
+    all_ts_dirs: list[Path] = []
+    if ext_dir:
+        all_ts_dirs = sorted(d for d in ext_dir.iterdir() if d.is_dir())
+
+    time_window = _job_time_window(job_dir)
+
+    in_window: list[Path] = []
+    if time_window and all_ts_dirs:
+        job_start, job_end = time_window
+        for d in all_ts_dirs:
+            ep = _parse_profile_timestamp(d.name)
+            if ep is not None and job_start <= ep <= job_end:
+                in_window.append(d)
+    else:
+        in_window = list(all_ts_dirs)
+
+    node0 = _node0_hostname(job_dir)
+
+    anchor_ts: set[str] = set()
+    if node0 and in_window:
+        for d in in_window:
+            if any(d.glob(f"{node0}.*xplane.pb")):
+                anchor_ts.add(d.name)
+
+    if not anchor_ts:
+        tl_dir = job_dir / "tracelens"
+        if tl_dir.is_dir():
+            anchor_ts = {d.name for d in tl_dir.iterdir() if d.is_dir()}
+        if not anchor_ts:
+            return None
+
+    anchor_epochs = []
+    for name in anchor_ts:
+        ep = _parse_profile_timestamp(name)
+        if ep is not None:
+            anchor_epochs.append(ep)
+
+    result = set(anchor_ts)
+    if anchor_epochs and in_window:
+        for d in in_window:
+            ep = _parse_profile_timestamp(d.name)
+            if ep is not None and any(
+                abs(ep - a) <= _PROFILE_SESSION_WINDOW_SECS for a in anchor_epochs
+            ):
+                result.add(d.name)
+
+    return result if result else None
+
+
 _PROFILES_PREFIX = "_profiles/"
 
 
@@ -532,18 +660,24 @@ async def list_job_files(job_id: str):
     files = _list_files_recursive(job_dir)
     ext_dir = _get_external_profile_dir(job_dir)
     if ext_dir:
+        owned_ts = _job_profile_timestamps(job_dir)
         for f in sorted(ext_dir.rglob("*")):
-            if f.is_file():
-                rel = str(f.relative_to(ext_dir))
-                try:
-                    size = f.stat().st_size
-                except OSError:
-                    size = 0
-                files.append({
-                    "path": f"{_PROFILES_PREFIX}{rel}",
-                    "size": size,
-                    "name": f.name,
-                })
+            if not f.is_file():
+                continue
+            rel = str(f.relative_to(ext_dir))
+            if owned_ts is not None:
+                top_dir = rel.split("/")[0] if "/" in rel else rel
+                if top_dir not in owned_ts:
+                    continue
+            try:
+                size = f.stat().st_size
+            except OSError:
+                size = 0
+            files.append({
+                "path": f"{_PROFILES_PREFIX}{rel}",
+                "size": size,
+                "name": f.name,
+            })
     return {"files": files}
 
 
@@ -562,6 +696,11 @@ async def serve_job_file(job_id: str, file_path: str):
         if not ext_dir:
             raise HTTPException(404, "No external profile directory configured")
         rel = file_path[len(_PROFILES_PREFIX):]
+        owned_ts = _job_profile_timestamps(job_dir)
+        if owned_ts is not None:
+            top_dir = rel.split("/")[0] if "/" in rel else rel
+            if top_dir not in owned_ts:
+                raise HTTPException(404, f"Profile not owned by job {job_id}")
         target = (ext_dir / rel).resolve()
         if not str(target).startswith(str(ext_dir.resolve())):
             raise HTTPException(403, "Path traversal not allowed")
@@ -633,6 +772,18 @@ async def compare_jobs(jobs: str = Query(..., description="Comma-separated job I
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
+_PREFERRED_PORT = 8080
+
+
+def _find_free_port(preferred: int = _PREFERRED_PORT, max_tries: int = 20) -> int:
+    """Try *preferred* first, then increment until a free port is found."""
+    for port in range(preferred, preferred + max_tries):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(("127.0.0.1", port)) != 0:
+                return port
+    return preferred
+
+
 def main():
     import uvicorn
 
@@ -645,8 +796,8 @@ def main():
         help="bind address (default: 127.0.0.1, use 0.0.0.0 for remote access)",
     )
     parser.add_argument(
-        "--port", type=int, default=8080,
-        help="port (default: 8080)",
+        "--port", type=int, default=None,
+        help="port (default: auto-detect from 8080)",
     )
     parser.add_argument(
         "--outputs-dir",
@@ -654,6 +805,8 @@ def main():
         help="outputs directory (default: JOB_WORKSPACE or ../outputs)",
     )
     args = parser.parse_args()
+
+    port = args.port if args.port is not None else _find_free_port()
 
     import os
     outputs = args.outputs_dir or os.environ.get(
@@ -663,10 +816,12 @@ def main():
 
     print(f"Serving MaxText Perf Dashboard")
     print(f"  Outputs dir: {_outputs_dir}")
-    print(f"  URL: http://{args.host}:{args.port}")
+    print(f"  URL: http://{args.host}:{port}")
+    if args.port is None and port != _PREFERRED_PORT:
+        print(f"  (port {_PREFERRED_PORT} was occupied, using {port})")
     print()
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    uvicorn.run(app, host=args.host, port=port, log_level="info")
 
 
 if __name__ == "__main__":
