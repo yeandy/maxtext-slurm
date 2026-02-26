@@ -6,9 +6,6 @@ set -eo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _JOB_START=$SECONDS
 
-# Export DOCKER_IMAGE if set (allows DOCKER_IMAGE=$TAG run_local.sh ...)
-[[ -n "${DOCKER_IMAGE:-}" ]] && export DOCKER_IMAGE
-
 # ============================================================================
 # Interactive mode (no args → shell inside the container)
 # ============================================================================
