@@ -40,7 +40,7 @@ A warning is printed if the path doesn't appear to be on a shared filesystem. Th
 # model_name_alias  overrides model_name in the checkpointing output directory so that
 #                   parallel experiments using the same config get isolated checkpoint/
 #                   tensorboard directories. Only takes effect with enable_checkpointing=true;
-#                   without it, dirs already include the unique Slurm job ID.
+#                   without it, dirs already include the unique job ID.
 #                   Alias requires two colons; use a trailing colon for alias without tag.
 #
 # The -- separator splits sbatch arguments from passthrough arguments.
@@ -116,7 +116,7 @@ in_container_run.sh 70b -- steps=5                     # quick test
 in_container_run.sh 70b -- steps=5 remat_policy=full   # try a different config
 ```
 
-Environment variables (`JAX_COORDINATOR_IP`, `NNODES`, etc.) default to single-node local values but can be overridden for multi-node setups. `JOB_WORKSPACE` defaults to `/outputs` inside the container or `outputs/` for native runs. `container_env.sh` overrides (e.g. `MAXTEXT_REPO_DIR=…`, `MAXTEXT_PATCH_BRANCH=…`) also work — `DOCKER_IMAGE` and other container-launch settings are ignored since the container is already running.
+Environment variables (`JAX_COORDINATOR_IP`, `NUM_NODES`, etc.) default to single-node local values but can be overridden for multi-node setups. `JOB_WORKSPACE` defaults to `/outputs` inside the container or `outputs/` for native runs. `container_env.sh` overrides (e.g. `MAXTEXT_REPO_DIR=…`, `MAXTEXT_PATCH_BRANCH=…`) also work — `DOCKER_IMAGE` and other container-launch settings are ignored since the container is already running.
 
 ## Checkpointing
 
@@ -143,7 +143,7 @@ For running multiple experiments with checkpointing on the same model, see [Mode
 
 With `enable_checkpointing=true`, the output directory is based on the model name (e.g. `outputs/llama2-70b/`) so checkpoints persist across job restarts. This means multiple experiments using the same model config will write to the same directory, causing conflicts.
 
-A **model name alias** overrides the model name in the checkpoint directory while still using the original config file. Without checkpointing, output directories already include the unique Slurm job ID (e.g. `outputs/12345-JAX-llama2-70b/`), so the alias has no effect.
+A **model name alias** overrides the model name in the checkpoint directory while still using the original config file. Without checkpointing, output directories already include the unique job ID (e.g. `outputs/12345-JAX-llama2-70b/`), so the alias has no effect.
 
 The number of colons determines parsing — alias always requires **two colons**:
 
@@ -349,7 +349,7 @@ $JOB_WORKSPACE/
 
 - **Interactive mode** (`run_local.sh` with no args) does not build artifacts — it uses the live code.
 - Artifacts exclude `.git/`, `outputs/`, and `*.trace.json*` files, so they are small and fast to build.
-- `rm -rf $JOB_WORKSPACE/<JOB_ID>*` cleans up the per-job dir and Slurm log as before, without touching artifacts.
+- `rm -rf $JOB_WORKSPACE/<JOB_ID>*` cleans up the per-job dir and job log as before, without touching artifacts.
 - To clean up orphaned artifacts (no longer referenced by any job):
 
 ```bash

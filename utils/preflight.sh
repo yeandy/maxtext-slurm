@@ -52,8 +52,8 @@ echo "$HOST | THP after  | enabled: $thp_enabled | defrag: $thp_defrag"
 
 
 # ---- Network checks (multi-node only) ----
-_nnodes="${NNODES:-${SLURM_NNODES:-1}}"
-if [[ "$_nnodes" -le 1 ]]; then
+_num_nodes="${NUM_NODES:-1}"
+if [[ "$_num_nodes" -le 1 ]]; then
     echo "$HOST | [NETWORK_CHECKS] skipped (single-node job)"
 else
     # ---- IPv6 routing rules check ----

@@ -22,20 +22,31 @@ else
 fi
 
 # ============================================================================
-# Required environment (callers must set these, or SLURM_* fallbacks are used)
+# Required environment (set by the orchestration layer before calling this script)
+#
+# The orchestration entry point (_job.sbatch for Slurm, a K8s manifest, etc.)
+# must export these env vars.  This script uses only generic names — no
+# scheduler-specific variables — so any orchestrator that sets these can reuse
+# _container.sh and everything downstream without modification.
+#
+#   JOB_ID                 Unique job identifier
+#   JOB_NAME               Human-readable job name
+#   NUM_NODES              Total node count (default: 1)
+#   NODE_RANK              This node's rank, 0-indexed (default: 0)
+#   JAX_COORDINATOR_IP     IP/hostname of the coordinator node (required for multi-node)
+#   JAX_COORDINATOR_PORT   Coordinator port (passed as positional arg)
+#   LOGIN_NODE_HOSTNAME    user@host for SSH tunnel hints (optional)
+#   LOGIN_NODE_IP          user@ip for SSH tunnel hints (optional)
+#   NODELIST_EXPANDED      Comma-separated hostnames for Prometheus scrape targets (optional)
+#   JOB_WORKSPACE          Output directory root (optional; defaults to $SCRIPT_DIR/outputs)
 # ============================================================================
-JAX_COORDINATOR_IP="${JAX_COORDINATOR_IP:-${SLURM_LAUNCH_NODE_IPADDR:-}}"
-JOB_ID="${JOB_ID:-${SLURM_JOB_ID:-${SLURM_JOBID:-unknown}}}"
-JOB_NAME="${JOB_NAME:-${SLURM_JOB_NAME:-unknown}}"
-NNODES="${NNODES:-${SLURM_NNODES:-1}}"
-NODE_RANK="${NODE_RANK:-${SLURM_NODEID:-0}}"
-LOGIN_NODE_HOSTNAME="${LOGIN_NODE_HOSTNAME:-${USER}@${SLURM_SUBMIT_HOST:-$(hostname -s)}}"
-LOGIN_NODE_IP="${LOGIN_NODE_IP:-${USER}@${SLURM_SUBMIT_HOST:-$(hostname -s)}}"
-
-# Optional: comma-separated expanded node list (for Prometheus scrape targets)
-if [[ -z "${NODELIST_EXPANDED:-}" && -n "${SLURM_JOB_NODELIST:-}" ]]; then
-    NODELIST_EXPANDED=$(scontrol show hostnames "$SLURM_JOB_NODELIST" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
-fi
+JOB_ID="${JOB_ID:-unknown}"
+JOB_NAME="${JOB_NAME:-unknown}"
+NUM_NODES="${NUM_NODES:-1}"
+NODE_RANK="${NODE_RANK:-0}"
+JAX_COORDINATOR_IP="${JAX_COORDINATOR_IP:-}"
+LOGIN_NODE_HOSTNAME="${LOGIN_NODE_HOSTNAME:-${USER}@$(hostname -s)}"
+LOGIN_NODE_IP="${LOGIN_NODE_IP:-${USER}@$(hostname -s)}"
 NODELIST_EXPANDED="${NODELIST_EXPANDED:-}"
 
 # Derived paths (job directory naming defined in utils/job_dir.sh).
@@ -266,9 +277,9 @@ if [[ "$MODE" == "pull-only" ]]; then
 fi
 
 # ---- Container naming & cleanup on cancellation ----
-# Unique name lets us 'docker stop' the container when the Slurm job is
-# cancelled (scancel).  Without this, cancelling kills srun/bash but the
-# Docker container (managed by dockerd) keeps running until the next job.
+# Unique name lets us 'docker stop' the container when the job is
+# cancelled (e.g. scancel, kubectl delete).  Without this, cancellation
+# kills the parent process but the Docker container keeps running.
 CONTAINER_NAME="maxtext-slurm-${JOB_ID}-node${NODE_RANK}"
 # Interactive runs all share JOB_ID=unknown; append PID to avoid collisions.
 [[ "$JOB_ID" == "unknown" ]] && CONTAINER_NAME+="-$$"
@@ -310,7 +321,7 @@ if nccl_nic=$(choose_nccl_socket_ifname); then
     echo "NCCL INFO $HOSTNAME: NCCL_SOCKET_IFNAME=$NCCL_SOCKET_IFNAME"
 else
     # Handle detection failure based on execution mode
-    if [[ "$MODE" == "script" && "$NNODES" -gt 1 ]]; then
+    if [[ "$MODE" == "script" && "$NUM_NODES" -gt 1 ]]; then
         # Multi-node script mode: fail fast (cross-node NCCL needs a socket interface)
         echo "NCCL FATAL $HOSTNAME: Failed to auto-detect NCCL_SOCKET_IFNAME; ABORTING..." >&2
         exit 1
@@ -364,9 +375,9 @@ echo "==STARTING DOCKER CONTAINER== ($CONTAINER_NAME)"
 GROUP_ADD_ARGS=()
 for gid in $(id -G); do GROUP_ADD_ARGS+=(--group-add "$gid"); done
 
-# ---- Cancellation cleanup (scancel / SIGTERM) ----
+# ---- Cancellation cleanup (SIGTERM) ----
 # EXIT trap: safety net — stops the container if it's still running.
-# TERM/INT traps (script mode only): respond to scancel immediately via
+# TERM/INT traps (script mode only): respond to SIGTERM immediately via
 # background 'wait'; interactive mode leaves signals to docker run.
 _CONTAINER_STOPPED=0
 _cleanup_container() {
@@ -418,7 +429,7 @@ DOCKER_RUN_ARGS=(
     "${TRAIN_ENV_ARGS[@]}"
     "${RAY_ENV_ARGS[@]}"
     "${NCCL_ENV_ARGS[@]}"
-    --env "NNODES=$NNODES"
+    --env "NUM_NODES=$NUM_NODES"
     --env "NODE_RANK=$NODE_RANK"
     --env "JOB_ID=$JOB_ID"
     "${GROUP_ADD_ARGS[@]}"
@@ -437,8 +448,8 @@ DOCKER_RUN_ARGS=(
 
 if [[ "$MODE" == "script" ]]; then
     # TERM/INT + background/wait: bash can only run traps while 'wait' is the
-    # current command.  A foreground docker-run blocks trap delivery, so scancel's
-    # SIGTERM would never trigger container cleanup before Slurm escalates to SIGKILL.
+    # current command.  A foreground docker-run blocks trap delivery, so a
+    # SIGTERM would never trigger container cleanup before escalation to SIGKILL.
     trap '_cleanup_container; exit 143' TERM
     trap '_cleanup_container; exit 130' INT
     "${DOCKER_CMD[@]}" run "${DOCKER_RUN_ARGS[@]}" &

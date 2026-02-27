@@ -26,12 +26,12 @@ Each layer communicates with its neighbors through environment variables and cal
 
 ## Axis 1: scheduler (Slurm → Kubernetes, etc.)
 
-**Current state.** Slurm coupling is confined to the orchestration tier: `submit.sh` (calls `sbatch`), `_job.sbatch` (Slurm directives + `srun`), and monitoring utilities (`slurm_job_monitor.sh`, `reservation.sh`). The container boundary uses generic env vars with `SLURM_*` fallbacks (e.g., `${JOB_ID:-${SLURM_JOB_ID:-unknown}}`); its one Slurm touch point — `scontrol` for `NODELIST_EXPANDED` — is skipped when Slurm is absent. The training layer has zero scheduler awareness.
+**Current state.** Slurm coupling is confined to the orchestration tier: `submit.sh` (calls `sbatch`), `_job.sbatch` (Slurm directives + `srun`), and monitoring utilities (`slurm_job_monitor.sh`, `reservation.sh`). `_job.sbatch` maps Slurm-specific variables (`SLURM_JOB_ID`, `SLURM_JOB_NUM_NODES`, `SLURM_NODEID`, etc.) to generic env vars (`JOB_ID`, `NUM_NODES`, `NODE_RANK`, etc.) before calling any downstream script. The container boundary (`_container.sh`) and everything below it use only these generic names — zero scheduler awareness.
 
 **To add a new scheduler** (e.g., Kubernetes):
 
-1. Write a new orchestration entry point (e.g., `submit_k8s.sh` + a Job manifest) that sets the same generic env vars (`JOB_ID`, `NNODES`, `NODE_RANK`, `JAX_COORDINATOR_IP`). For observability, also set `RAY=1`.
-2. Everything from `_container.sh` downward runs unmodified — it derives `MODE`, maps `RAY` → `USE_RAY`, and conditionally passes the right env vars to Docker.
+1. Write a new orchestration entry point (e.g., `submit_k8s.sh` + a Job/JobSet manifest) that sets the same generic env vars (`JOB_ID`, `NUM_NODES`, `NODE_RANK`, `JAX_COORDINATOR_IP`, `NODELIST_EXPANDED`). For observability, also set `RAY=1`. See the env var contract documented at the top of `_container.sh`.
+2. Call `_container.sh` with the same positional args (`$JAX_PORT $MODEL_NAME $EXP_TAG $MODEL_NAME_ALIAS -- $PASSTHROUGH_ARGS`). Everything from `_container.sh` downward runs unmodified — it derives `MODE`, maps `RAY` → `USE_RAY`, handles Docker launch, and conditionally passes the right env vars to the training container.
 
 **Effort:** New files only. No changes to existing layers. See [Architecture: Orchestrator Extensibility](architecture.md#orchestrator-extensibility) for the tier table.
 

@@ -131,7 +131,7 @@ fi
 # GPU memory release is the next job's preflight responsibility.
 #
 # Budget: kill (≤5s) + cgroup (~1s) + stop (≤8s) + rm (~1s)
-#       ≈ 15s, within Slurm's default 30s KillWait.
+#       ≈ 15s, within typical scheduler kill grace periods (e.g. Slurm KillWait=30s).
 
 if [[ -n "$TARGET_CONTAINER" ]]; then
     # Cap docker kill — its internal wait for exit events can burn 10+ seconds.
