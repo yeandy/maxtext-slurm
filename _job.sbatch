@@ -55,11 +55,11 @@ echo "JOB_NAME=$JOB_NAME"
 echo "NUM_NODES=$NUM_NODES"
 echo "JOB_NODELIST=$JOB_NODELIST"
 echo "JAX_COORDINATOR_PORT=$JAX_PORT"
-[[ -n "${RAY_PORT:-}" ]] && echo "RAY_PORT=$RAY_PORT"
+if [[ -n "${RAY_PORT:-}" ]]; then echo "RAY_PORT=$RAY_PORT"; fi
 echo "PASSTHROUGH_ARGS=\"${PASSTHROUGH_ARGS[*]}\""
 echo "MODEL_NAME=$MODEL_NAME"
-[[ -n "$MODEL_NAME_ALIAS" ]] && echo "MODEL_NAME_ALIAS=$MODEL_NAME_ALIAS"
-[[ -n "$EXP_TAG" ]] && echo "EXP_TAG=$EXP_TAG"
+if [[ -n "$MODEL_NAME_ALIAS" ]]; then echo "MODEL_NAME_ALIAS=$MODEL_NAME_ALIAS"; fi
+if [[ -n "$EXP_TAG" ]]; then echo "EXP_TAG=$EXP_TAG"; fi
 
 # Stage timeouts — see utils/stage_timeout.sh for details.
 # Override: STAGE_TIMEOUTS="preflight:600,pull:1800" ./submit.sh ...

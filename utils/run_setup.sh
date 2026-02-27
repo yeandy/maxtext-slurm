@@ -119,11 +119,11 @@ ln -snf "../$JOB_DIR.log" "$JOB_WORKSPACE/$JOB_DIR/log"
     echo "NUM_NODES=$NUM_NODES"
     echo "JOB_NODELIST=$(hostname)"
     echo "JAX_COORDINATOR_PORT=$JAX_PORT"
-    [[ -n "${RAY_PORT:-}" ]] && echo "RAY_PORT=$RAY_PORT"
+    if [[ -n "${RAY_PORT:-}" ]]; then echo "RAY_PORT=$RAY_PORT"; fi
     echo "PASSTHROUGH_ARGS=\"${PASSTHROUGH_ARGS[*]}\""
     echo "MODEL_NAME=$MODEL_NAME"
-    [[ -n "$MODEL_NAME_ALIAS" ]] && echo "MODEL_NAME_ALIAS=$MODEL_NAME_ALIAS"
-    [[ -n "$EXP_TAG" ]] && echo "EXP_TAG=$EXP_TAG"
+    if [[ -n "$MODEL_NAME_ALIAS" ]]; then echo "MODEL_NAME_ALIAS=$MODEL_NAME_ALIAS"; fi
+    if [[ -n "$EXP_TAG" ]]; then echo "EXP_TAG=$EXP_TAG"; fi
 } | tee "$LOG_FILE"
 
 # Hold an append-mode fd to the log file. Unlike >> "$LOG_FILE" (which opens
