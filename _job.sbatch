@@ -20,7 +20,7 @@ _JOB_START=$SECONDS
 # the same generic env vars — everything below runs unmodified.
 export JOB_ID="$SLURM_JOB_ID"
 export JOB_NAME="$SLURM_JOB_NAME"
-export NUM_NODES="$SLURM_JOB_NUM_NODES"
+export NNODES="$SLURM_JOB_NUM_NODES"
 # NODE_RANK is per-task, not per-job — mapped in NODE_REPORT below.
 export JOB_NODELIST="$SLURM_JOB_NODELIST"
 export JAX_COORDINATOR_IP="$SLURM_LAUNCH_NODE_IPADDR"
@@ -52,7 +52,7 @@ MODEL_NAME_ALIAS=${SCRIPT_ARGS[2]:-}
 # Parsers (analyze_job.py, tgs_tagger.py, perf_server.py) match these names.
 echo "JOB_ID=$JOB_ID"
 echo "JOB_NAME=$JOB_NAME"
-echo "NUM_NODES=$NUM_NODES"
+echo "NNODES=$NNODES"
 echo "JOB_NODELIST=$JOB_NODELIST"
 echo "JAX_COORDINATOR_PORT=$JAX_PORT"
 if [[ -n "${RAY_PORT:-}" ]]; then echo "RAY_PORT=$RAY_PORT"; fi
@@ -79,7 +79,7 @@ _print_summary() {
     echo "========================== JOB SUMMARY =========================="
     echo "  Job:    ${JOB_ID:-?} (${JOB_NAME:-?})"
     echo "  Model:  ${MODEL_NAME:-?}"
-    echo "  Nodes:  ${NUM_NODES:-?}"
+    echo "  Nodes:  ${NNODES:-?}"
     echo "  Wall:   $(_fmt_elapsed $(( SECONDS - _JOB_START )))"
     if [[ $rc -eq 0 ]]; then
         echo "  Status: $(tput setaf 2 2>/dev/null)SUCCESS (exit 0)$(tput sgr0 2>/dev/null)"
@@ -106,7 +106,7 @@ trap _handle_cancel TERM
 # signals until the child exits — but the child never exits because it never
 # received the signal, leaving orphaned containers.
 # NODE_RANK is mapped here (per-task) because SLURM_NODEID is set by srun,
-# not sbatch — unlike JOB_ID/NUM_NODES which are batch-level exports above.
+# not sbatch — unlike JOB_ID/NNODES which are batch-level exports above.
 NODE_REPORT='export NODE_RANK=${SLURM_NODEID:-0}; "$@" & _cpid=$!; trap "kill $_cpid 2>/dev/null" TERM INT; wait $_cpid 2>/dev/null; wait $_cpid 2>/dev/null; _rc=$?; [ $_rc -ne 0 ] && echo "NODE_EXIT host=$(hostname) exit=$_rc"; exit $_rc'
 
 # Per-host pre-flight setup.

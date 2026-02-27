@@ -31,7 +31,7 @@ fi
 #
 #   JOB_ID                 Unique job identifier
 #   JOB_NAME               Human-readable job name
-#   NUM_NODES              Total node count (default: 1)
+#   NNODES                 Total node count (default: 1)
 #   NODE_RANK              This node's rank, 0-indexed (default: 0)
 #   JAX_COORDINATOR_IP     IP/hostname of the coordinator node (required for multi-node)
 #   JAX_COORDINATOR_PORT   Coordinator port (passed as positional arg)
@@ -42,7 +42,7 @@ fi
 # ============================================================================
 JOB_ID="${JOB_ID:-unknown}"
 JOB_NAME="${JOB_NAME:-unknown}"
-NUM_NODES="${NUM_NODES:-1}"
+NNODES="${NNODES:-1}"
 NODE_RANK="${NODE_RANK:-0}"
 JAX_COORDINATOR_IP="${JAX_COORDINATOR_IP:-}"
 LOGIN_NODE_HOSTNAME="${LOGIN_NODE_HOSTNAME:-${USER}@$(hostname -s)}"
@@ -321,7 +321,7 @@ if nccl_nic=$(choose_nccl_socket_ifname); then
     echo "NCCL INFO $HOSTNAME: NCCL_SOCKET_IFNAME=$NCCL_SOCKET_IFNAME"
 else
     # Handle detection failure based on execution mode
-    if [[ "$MODE" == "script" && "$NUM_NODES" -gt 1 ]]; then
+    if [[ "$MODE" == "script" && "$NNODES" -gt 1 ]]; then
         # Multi-node script mode: fail fast (cross-node NCCL needs a socket interface)
         echo "NCCL FATAL $HOSTNAME: Failed to auto-detect NCCL_SOCKET_IFNAME; ABORTING..." >&2
         exit 1
@@ -429,7 +429,7 @@ DOCKER_RUN_ARGS=(
     "${TRAIN_ENV_ARGS[@]}"
     "${RAY_ENV_ARGS[@]}"
     "${NCCL_ENV_ARGS[@]}"
-    --env "NUM_NODES=$NUM_NODES"
+    --env "NNODES=$NNODES"
     --env "NODE_RANK=$NODE_RANK"
     --env "JOB_ID=$JOB_ID"
     "${GROUP_ADD_ARGS[@]}"

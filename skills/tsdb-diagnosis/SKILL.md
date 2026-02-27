@@ -63,7 +63,7 @@ This API is referenced throughout the skill — in "Metrics Exporter Operations 
    - **Fresh start vs checkpoint restore** — affects expected baseline (restored jobs may leak RCCL resources; see "Checkpointing interference")
    - **Failure class** — hang, heartbeat-timeout, OOM, etc. (determines which playbook to run in step 5)
    - **Step range and timing** — which steps are comparable, where anomalies occurred
-   - **Config parameters** — `PASSTHROUGH_ARGS`, `NUM_NODES`, `checkpoint_period`, etc.
+   - **Config parameters** — `PASSTHROUGH_ARGS`, `NNODES`, `checkpoint_period`, etc.
 
    Without triage, you risk misinterpreting metrics (e.g., querying post-hang idle metrics as if they were training metrics, or missing that a checkpoint restore caused resource leaks). For proactive health checks on a live job where no failure has occurred, triage is still useful to confirm the job is running and extract the head node hostname/port.
 
@@ -165,7 +165,7 @@ This API is referenced throughout the skill — in "Metrics Exporter Operations 
 
    This step is not optional — always run it. The output tells you:
    - Whether GPU metrics (`hw_gpu_*`), network metrics (`hw_tcp_*`, `hw_rdma_*`), and training metrics (`tb_*`) are all present.
-   - How many nodes were scraped (should match the job's `NUM_NODES`).
+   - How many nodes were scraped (should match the job's `NNODES`).
    - The time range covered, confirming the TSDB has data for the period of interest.
 
    **Verify you are querying the correct TSDB.** After discovering metrics, cross-check a data point against the job log to confirm the database belongs to the expected job:
@@ -662,7 +662,7 @@ When `enable_single_replica_ckpt_restoring=true` and the job restores from a che
 **Setup:** From the log, extract:
 - Crash time (the heartbeat error timestamp)
 - Heartbeat timeout value (`jax_distributed_heartbeat_timeout_seconds`)
-- Accused task IDs and their host mappings (from `NUM_NODES`, `NODE_LIST`, task-to-host mapping in log)
+- Accused task IDs and their host mappings (from `NNODES`, `NODE_LIST`, task-to-host mapping in log)
 - Compute heartbeat-stop time: `crash_time - heartbeat_timeout`
 
 **Queries** (at the heartbeat-stop time — this is when the heartbeats actually failed):
@@ -926,7 +926,7 @@ Before looking at metrics, compare the jobs' configurations. Parse `PASSTHROUGH_
 - `enable_checkpointing`, `checkpoint_period`, `async_checkpointing`
 - `load_balance_loss_weight` (MoE)
 - `_env_*` flags (XLA flags, NCCL tuning)
-- Number of nodes (`NUM_NODES`), GPUs per node
+- Number of nodes (`NNODES`), GPUs per node
 
 If configs differ, the performance difference may be **expected** — the metric comparison should account for the config change, not treat it as an anomaly.
 

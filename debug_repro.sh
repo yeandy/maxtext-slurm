@@ -26,7 +26,7 @@ while true; do
 
     START_TIME=$(date +%s)
 
-    NUM_NODES=1 \
+    NNODES=1 \
     NODE_RANK=0 \
     JAX_COORDINATOR_IP=127.0.0.1 \
     JAX_COORDINATOR_PORT=20002 \

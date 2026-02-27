@@ -57,7 +57,7 @@ export JAX_COORDINATOR_IP="${JAX_COORDINATOR_IP:-127.0.0.1}"
 
 export JOB_ID="${JOB_ID:-local_$(date +%Y%m%d_%H%M%S)_$(printf '%04x' $RANDOM)}"
 export JOB_NAME
-export NUM_NODES="${NUM_NODES:-1}"
+export NNODES="${NNODES:-1}"
 export NODE_RANK="${NODE_RANK:-0}"
 export MODEL_NAME_ALIAS
 source "$SCRIPT_DIR/utils/detect_ip.sh"
@@ -116,7 +116,7 @@ ln -snf "../$JOB_DIR.log" "$JOB_WORKSPACE/$JOB_DIR/log"
 {
     echo "JOB_ID=$JOB_ID"
     echo "JOB_NAME=$JOB_NAME"
-    echo "NUM_NODES=$NUM_NODES"
+    echo "NNODES=$NNODES"
     echo "JOB_NODELIST=$(hostname)"
     echo "JAX_COORDINATOR_PORT=$JAX_PORT"
     if [[ -n "${RAY_PORT:-}" ]]; then echo "RAY_PORT=$RAY_PORT"; fi
@@ -158,7 +158,7 @@ _print_summary() {
     summary="========================== JOB SUMMARY ==========================
   Job:    $JOB_ID ($JOB_NAME)
   Model:  $MODEL_NAME
-  Nodes:  $NUM_NODES
+  Nodes:  $NNODES
   Wall:   $(_fmt_elapsed $(( SECONDS - _JOB_START )))
   Status: $status
 ================================================================="
