@@ -225,12 +225,12 @@ def process_file(file: Path, cleanup: bool, force: bool = False) -> int:
     # ── num_nodes from header (KEY=VALUE format) ──
     num_nodes = None
     for line in lines[:20]:
-        m = re.match(r"^(?:NNODES|SLURM_JOB_NUM_NODES)\s*=\s*(\d+)", line)
+        m = re.match(r"^(?:NUM_NODES|NNODES|SLURM_JOB_NUM_NODES)\s*=\s*(\d+)", line)  # NNODES/SLURM_* for old logs
         if m:
             num_nodes = int(m.group(1))
             break
     if num_nodes is None:
-        return fail("NNODES=<int> not found in log header", rc=3)
+        return fail("NUM_NODES=<int> not found in log header", rc=3)
 
     # ── check if job is still running (used by rename and cleanup guards) ──
     running = _is_job_running(text, file)
@@ -496,7 +496,7 @@ def resolve_files(args: list[str], default_dir: str) -> list[Path]:
     for arg in args:
         p = Path(arg)
 
-        # Pure integer → Slurm job ID
+        # Pure integer → job ID
         if arg.isdigit():
             job_dir = Path(default_dir)
             matches = sorted(_find_log_files(job_dir, f"{arg}-*"))
@@ -565,7 +565,7 @@ arguments:
 
 file requirements:
   - .log or .out extension
-  - NNODES=<int> in the log header
+  - NUM_NODES=<int> in the log header
   - Must contain "Tokens/s/device:" lines
 
 steady-state measurement:
@@ -577,11 +577,11 @@ exit status:
   0  Success
   1  File not found / not a regular file / not .log/.out / no files to process
   2  No Tokens/s/device lines found (or no steady-state data)
-  3  NNODES not found in log header
+  3  NUM_NODES not found in log header
 
 examples:
   %(prog)s                                    # latest log in default outputs dir
-  %(prog)s 12345                              # process files for Slurm job 12345
+  %(prog)s 12345                              # process files for job 12345
   %(prog)s outputs/12345-run.log              # specific file
   %(prog)s outputs/12345-JAX-llama2-70b/      # job dir (follows log symlink)
   %(prog)s -f outputs/12345-run.log           # force rename/cleanup if job looks active

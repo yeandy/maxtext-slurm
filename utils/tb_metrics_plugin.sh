@@ -45,8 +45,8 @@
 #       by hostname and creation timestamp — no getmtime).
 #     • Waiting for file (first ~5 min): one glob per 120 s.
 #     • Waiting after ~5 min: backoff escalates to one glob per 300 s.
-#     • Non-rank-0 nodes: bash wrapper detects NODE_RANK/SLURM_NODEID,
-#       exits 99 — exporter never invokes this plugin again.
+#     • Non-rank-0 nodes: bash wrapper detects NODE_RANK, exits 99 —
+#       exporter never invokes this plugin again.
 #     • No event file (TB disabled, etc.): ~3 globs at 120 s, then ~5
 #       globs at 300 s, gives up at 30 min → exit 99 — exporter stops
 #       invoking.  ~8 globs total over 30 min.
@@ -133,9 +133,9 @@ HOSTNAME_SHORT="${1:?Usage: tb_metrics_plugin.sh <hostname>}"
 # ---------------------------------------------------------------------------
 
 # Non-rank-0 nodes never write TensorBoard events — skip permanently.
-# NODE_RANK: exported into Docker by _container.sh (--env NODE_RANK=...).
-# SLURM_NODEID: available when running outside Docker under Slurm directly.
-_node_rank="${SLURM_NODEID:-${NODE_RANK:-}}"
+# NODE_RANK: set by the orchestration layer and exported into Docker
+# by _container.sh (--env NODE_RANK=...).
+_node_rank="${NODE_RANK:-}"
 if [[ -n "$_node_rank" && "$_node_rank" != "0" ]]; then
     exit 99
 fi
@@ -149,10 +149,10 @@ HOST = sys.argv[1]
 # 0. Early exit for non-rank-0 nodes.
 # ---------------------------------------------------------------------------
 # Only rank 0 writes TensorBoard events.  The bash wrapper above handles
-# the common case (NODE_RANK / SLURM_NODEID set).  This is a fallback for
-# any edge case where the bash check didn't fire (e.g. env var differences
-# between bash and Python in non-standard setups).
-_node_rank = os.environ.get('SLURM_NODEID') or os.environ.get('NODE_RANK', '')
+# the common case (NODE_RANK set).  This is a fallback for any edge case
+# where the bash check didn't fire (e.g. env var differences between bash
+# and Python in non-standard setups).
+_node_rank = os.environ.get('NODE_RANK', '')
 if _node_rank and _node_rank != '0':
     sys.exit(99)
 
@@ -164,11 +164,11 @@ if _node_rank and _node_rank != '0':
 # Short backoff: file expected soon after training starts (~120 s flush).
 _NONE_BACKOFF_SECONDS = 120
 # Long backoff: after waiting >300 s, escalate.  Keeps NFS quiet for
-# non-rank-0 nodes (without SLURM_NODEID) and TB-disabled jobs.
+# non-rank-0 nodes (without NODE_RANK) and TB-disabled jobs.
 _NONE_BACKOFF_STALE_SECONDS = 300
 
 # Give-up threshold: if we remain in __NONE__ for this long, stop
-# globbing permanently.  Covers non-rank-0 without SLURM_NODEID,
+# globbing permanently.  Covers non-rank-0 without NODE_RANK,
 # rank 0 with TensorBoard disabled, etc.
 _GIVE_UP_SECONDS = 1800  # 30 min
 

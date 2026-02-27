@@ -57,7 +57,7 @@ export JAX_COORDINATOR_IP="${JAX_COORDINATOR_IP:-127.0.0.1}"
 
 export JOB_ID="${JOB_ID:-local_$(date +%Y%m%d_%H%M%S)_$(printf '%04x' $RANDOM)}"
 export JOB_NAME
-export NNODES="${NNODES:-1}"
+export NUM_NODES="${NUM_NODES:-1}"
 export NODE_RANK="${NODE_RANK:-0}"
 export MODEL_NAME_ALIAS
 source "$SCRIPT_DIR/utils/detect_ip.sh"
@@ -91,7 +91,6 @@ source "$SCRIPT_DIR/utils/pick_port.sh"
 
 JAX_PORT="${JAX_COORDINATOR_PORT:-$(pick_free_port)}"
 export JAX_COORDINATOR_PORT="$JAX_PORT"
-echo "JAX_COORDINATOR_PORT=$JAX_PORT"
 
 # Pick a free port for Ray head GCS (only when Ray is enabled).
 # Always pick fresh — inherited RAY_PORT (e.g. from a previous run's
@@ -99,32 +98,32 @@ echo "JAX_COORDINATOR_PORT=$JAX_PORT"
 if [[ "${USE_RAY:-false}" == "true" ]]; then
     RAY_PORT=$(pick_free_port "$JAX_PORT")
     export RAY_PORT
-    echo "RAY_PORT=$RAY_PORT"
 fi
 
 # ============================================================================
 # Logging
 # ============================================================================
 
-# Log to file (mirrors Slurm's --output) while still printing to terminal
+# Log to file (mirrors the --output path) while still printing to terminal
 LOG_FILE="$JOB_WORKSPACE/$JOB_DIR.log"
 echo "LOG_FILE=$LOG_FILE"
 
 # Symlink to the job log inside the job directory for easy access
 ln -snf "../$JOB_DIR.log" "$JOB_WORKSPACE/$JOB_DIR/log"
 
-# Write log header in KEY=VALUE format.
-# Field order mirrors _job.sbatch (Slurm path) for consistent parsing.
+# ---- Standardized log header (same key=value format as _job.sbatch) ----
+# Parsers (analyze_job.py, tgs_tagger.py, perf_server.py) match these names.
 {
     echo "JOB_ID=$JOB_ID"
     echo "JOB_NAME=$JOB_NAME"
-    echo "NNODES=$NNODES"
-    echo "NODE_RANK=$NODE_RANK"
+    echo "NUM_NODES=$NUM_NODES"
     echo "JOB_NODELIST=$(hostname)"
+    echo "JAX_COORDINATOR_PORT=$JAX_PORT"
+    [[ -n "${RAY_PORT:-}" ]] && echo "RAY_PORT=$RAY_PORT"
     echo "PASSTHROUGH_ARGS=\"${PASSTHROUGH_ARGS[*]}\""
     echo "MODEL_NAME=$MODEL_NAME"
-    if [[ -n "$MODEL_NAME_ALIAS" ]]; then echo "MODEL_NAME_ALIAS=$MODEL_NAME_ALIAS"; fi
-    if [[ -n "$EXP_TAG" ]]; then echo "EXP_TAG=$EXP_TAG"; fi
+    [[ -n "$MODEL_NAME_ALIAS" ]] && echo "MODEL_NAME_ALIAS=$MODEL_NAME_ALIAS"
+    [[ -n "$EXP_TAG" ]] && echo "EXP_TAG=$EXP_TAG"
 } | tee "$LOG_FILE"
 
 # Hold an append-mode fd to the log file. Unlike >> "$LOG_FILE" (which opens
@@ -159,6 +158,7 @@ _print_summary() {
     summary="========================== JOB SUMMARY ==========================
   Job:    $JOB_ID ($JOB_NAME)
   Model:  $MODEL_NAME
+  Nodes:  $NUM_NODES
   Wall:   $(_fmt_elapsed $(( SECONDS - _JOB_START )))
   Status: $status
 ================================================================="

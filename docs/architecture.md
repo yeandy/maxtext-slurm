@@ -112,9 +112,9 @@ The codebase is layered so that scheduler coupling is confined to the orchestrat
 
 | Tier | Files | Scheduler coupling |
 |------|-------|--------------------|
-| **Orchestration** | `submit.sh`, `_job.sbatch`, `reservation.sh`, `slurm_job_monitor.sh` | Slurm-specific (`sbatch`, `srun`, `#SBATCH`). Replace this tier for a different scheduler. |
-| **Container boundary** | `_container.sh` | Uses generic env vars (`JOB_ID`, `NNODES`, `NODE_RANK`) with `SLURM_*` fallbacks; maps `RAY` → `USE_RAY` and conditionally passes training/Ray env vars to Docker. One Slurm touch point: `scontrol` for `NODELIST_EXPANDED` (skipped when Slurm is absent). |
+| **Orchestration** | `submit.sh`, `_job.sbatch`, `reservation.sh`, `slurm_job_monitor.sh` | Slurm-specific (`sbatch`, `srun`, `#SBATCH`). `_job.sbatch` maps Slurm variables to generic env vars (`JOB_ID`, `NUM_NODES`, `NODE_RANK`, etc.) before calling downstream scripts. Replace this tier for a different scheduler. |
+| **Container boundary** | `_container.sh` | Scheduler-agnostic. Uses only generic env vars (set by the orchestration layer); maps `RAY` → `USE_RAY` and conditionally passes training/Ray env vars to Docker. |
 | **Training** | `_train.sh`, `train_env.sh`, all Python code | Zero scheduler awareness. |
 | **Utilities** | `parse_job_args.sh`, `run_setup.sh`, `artifact.sh`, `preflight.sh`, `docker_utils.sh`, `stage_timeout.sh` | No scheduler dependency. |
 
-To add a new scheduler (e.g., Kubernetes), only the orchestration tier needs a parallel implementation. See [Extensibility](extensibility.md) for details on each adaptation axis.
+To add a new scheduler (e.g., Kubernetes), only the orchestration tier needs a parallel implementation — write a new entry point that sets the same generic env vars and calls `_container.sh`. See [Extensibility](extensibility.md) for details on each adaptation axis.

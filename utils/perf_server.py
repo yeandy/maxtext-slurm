@@ -346,10 +346,10 @@ def _parse_kernel_category_csv(path: Path) -> list[dict] | None:
         return None
 
 
-def _slurm_nodelist_first(nodelist: str) -> str:
-    """Return the first hostname from a Slurm NODELIST string.
+def _nodelist_first(nodelist: str) -> str:
+    """Return the first hostname from a NODELIST string.
 
-    Handles bracket notation (``chi[2815-2817,2820]`` → ``chi2815``),
+    Handles Slurm bracket notation (``chi[2815-2817,2820]`` → ``chi2815``),
     comma-separated (``node01,node02`` → ``node01``), and plain strings.
     """
     bracket = nodelist.find("[")
@@ -365,9 +365,8 @@ def _slurm_nodelist_first(nodelist: str) -> str:
 def _node0_hostname(job_dir: Path) -> str | None:
     """Extract node 0's hostname from the log header.
 
-    Matches ``SLURM_JOB_NODELIST=`` (Slurm jobs via ``_job.sbatch``) or
-    ``JOB_NODELIST=`` (local runs via ``run_setup.sh``).  Falls back to
-    ``HOSTNAME=`` for legacy logs.
+    Matches ``JOB_NODELIST=`` (all entry points) or ``SLURM_JOB_NODELIST=``
+    (legacy Slurm logs).  Falls back to ``HOSTNAME=`` for older logs.
     """
     log_file = _find_log_file(job_dir)
     if not log_file:
@@ -376,9 +375,9 @@ def _node0_hostname(job_dir: Path) -> str | None:
         header = log_file.read_text(errors="replace")[:2000]
     except OSError:
         return None
-    m = re.search(r"^(?:SLURM_JOB_NODELIST|JOB_NODELIST)\s*=\s*(.+)", header, re.MULTILINE)
+    m = re.search(r"^(?:JOB_NODELIST|SLURM_JOB_NODELIST)\s*=\s*(.+)", header, re.MULTILINE)
     if m:
-        return _slurm_nodelist_first(m.group(1).strip())
+        return _nodelist_first(m.group(1).strip())
     m = re.search(r"^HOSTNAME\s*=\s*(\S+)", header, re.MULTILINE)
     if m:
         return m.group(1).strip()
@@ -550,7 +549,7 @@ def _job_time_window(job_dir: Path) -> tuple[float, float] | None:
     submission time) and the log file mtime + 60 s buffer as the end proxy.
     The buffer accounts for profiles captured after the last log write
     (e.g. killed jobs with periodic profiling).  Kept small to avoid
-    overlapping with back-to-back SLURM jobs on the same nodes.
+    overlapping with back-to-back jobs on the same nodes.
     """
     import time
 

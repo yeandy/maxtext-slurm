@@ -12,40 +12,54 @@
 SCRIPT_DIR="${MAXTEXT_SLURM_DIR:-.}"
 _JOB_START=$SECONDS
 
-echo "SLURM_JOB_ID=$SLURM_JOB_ID"
-echo "SLURM_JOB_NAME=$SLURM_JOB_NAME"
-echo "NNODES=$SLURM_JOB_NUM_NODES"
-echo "SLURM_NODEID=$SLURM_NODEID"
-echo "SLURM_JOB_NODELIST=$SLURM_JOB_NODELIST"
-echo "SLURM_GPUS_PER_TASK=$SLURM_GPUS_PER_TASK"
-echo "SLURM_NTASKS_PER_NODE=$SLURM_NTASKS_PER_NODE"
+# ---- Map Slurm variables to scheduler-agnostic names ----
+# _container.sh and all downstream scripts (training, observability, utilities)
+# use only these generic names.  This mapping confines Slurm awareness to the
+# orchestration tier (_job.sbatch + submit.sh), so adding a new scheduler
+# (e.g. Kubernetes) requires only a new orchestration entry point that sets
+# the same generic env vars — everything below runs unmodified.
+export JOB_ID="$SLURM_JOB_ID"
+export JOB_NAME="$SLURM_JOB_NAME"
+export NUM_NODES="$SLURM_JOB_NUM_NODES"
+# NODE_RANK is per-task, not per-job — mapped in NODE_REPORT below.
+export JOB_NODELIST="$SLURM_JOB_NODELIST"
+export JAX_COORDINATOR_IP="$SLURM_LAUNCH_NODE_IPADDR"
+export LOGIN_NODE_HOSTNAME="${USER}@${SLURM_SUBMIT_HOST}"
+export LOGIN_NODE_IP="${USER}@${SLURM_SUBMIT_HOST}"
+export NODELIST_EXPANDED=$(scontrol show hostnames "$SLURM_JOB_NODELIST" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
 
 source "$SCRIPT_DIR/utils/pick_port.sh"
 
 JAX_PORT=$(pick_free_port) || { echo "FATAL: Could not find a free port for JAX coordinator" >&2; exit 1; }
-echo "JAX_COORDINATOR_PORT=$JAX_PORT"
 
 # Exported so srun --export=ALL propagates it to every node; only the head
 # node binds this port, but workers need the value to connect to it.
 if [[ "${USE_RAY:-false}" == "true" ]]; then
     RAY_PORT=$(pick_free_port "$JAX_PORT") || { echo "FATAL: Could not find a free port for Ray" >&2; exit 1; }
     export RAY_PORT
-    echo "RAY_PORT=$RAY_PORT"
 fi
 
 # Split args first
 source "$SCRIPT_DIR/utils/split_script_args.sh"
 split_script_args "$@"
-echo "PASSTHROUGH_ARGS=\"${PASSTHROUGH_ARGS[*]}\""
 
 # Parse from SCRIPT_ARGS
 MODEL_NAME=${SCRIPT_ARGS[0]:?model_name is required}
 EXP_TAG=${SCRIPT_ARGS[1]:-}
 MODEL_NAME_ALIAS=${SCRIPT_ARGS[2]:-}
 
+# ---- Standardized log header (same key=value format as run_setup.sh) ----
+# Parsers (analyze_job.py, tgs_tagger.py, perf_server.py) match these names.
+echo "JOB_ID=$JOB_ID"
+echo "JOB_NAME=$JOB_NAME"
+echo "NUM_NODES=$NUM_NODES"
+echo "JOB_NODELIST=$JOB_NODELIST"
+echo "JAX_COORDINATOR_PORT=$JAX_PORT"
+[[ -n "${RAY_PORT:-}" ]] && echo "RAY_PORT=$RAY_PORT"
+echo "PASSTHROUGH_ARGS=\"${PASSTHROUGH_ARGS[*]}\""
 echo "MODEL_NAME=$MODEL_NAME"
-if [[ -n "$MODEL_NAME_ALIAS" ]]; then echo "MODEL_NAME_ALIAS=$MODEL_NAME_ALIAS"; fi
-if [[ -n "$EXP_TAG" ]]; then echo "EXP_TAG=$EXP_TAG"; fi
+[[ -n "$MODEL_NAME_ALIAS" ]] && echo "MODEL_NAME_ALIAS=$MODEL_NAME_ALIAS"
+[[ -n "$EXP_TAG" ]] && echo "EXP_TAG=$EXP_TAG"
 
 # Stage timeouts — see utils/stage_timeout.sh for details.
 # Override: STAGE_TIMEOUTS="preflight:600,pull:1800" ./submit.sh ...
@@ -63,9 +77,9 @@ _fmt_elapsed() {
 _print_summary() {
     local rc=${_CANCEL_RC:-$?}
     echo "========================== JOB SUMMARY =========================="
-    echo "  Job:    ${SLURM_JOB_ID:-?} (${SLURM_JOB_NAME:-?})"
+    echo "  Job:    ${JOB_ID:-?} (${JOB_NAME:-?})"
     echo "  Model:  ${MODEL_NAME:-?}"
-    echo "  Nodes:  ${SLURM_JOB_NUM_NODES:-?}"
+    echo "  Nodes:  ${NUM_NODES:-?}"
     echo "  Wall:   $(_fmt_elapsed $(( SECONDS - _JOB_START )))"
     if [[ $rc -eq 0 ]]; then
         echo "  Status: $(tput setaf 2 2>/dev/null)SUCCESS (exit 0)$(tput sgr0 2>/dev/null)"
@@ -91,7 +105,9 @@ trap _handle_cancel TERM
 # scancel) immediately and forward it.  With a foreground child, bash queues
 # signals until the child exits — but the child never exits because it never
 # received the signal, leaving orphaned containers.
-NODE_REPORT='"$@" & _cpid=$!; trap "kill $_cpid 2>/dev/null" TERM INT; wait $_cpid 2>/dev/null; wait $_cpid 2>/dev/null; _rc=$?; [ $_rc -ne 0 ] && echo "NODE_EXIT host=$(hostname) exit=$_rc"; exit $_rc'
+# NODE_RANK is mapped here (per-task) because SLURM_NODEID is set by srun,
+# not sbatch — unlike JOB_ID/NUM_NODES which are batch-level exports above.
+NODE_REPORT='export NODE_RANK=${SLURM_NODEID:-0}; "$@" & _cpid=$!; trap "kill $_cpid 2>/dev/null" TERM INT; wait $_cpid 2>/dev/null; wait $_cpid 2>/dev/null; _rc=$?; [ $_rc -ne 0 ] && echo "NODE_EXIT host=$(hostname) exit=$_rc"; exit $_rc'
 
 # Per-host pre-flight setup.
 run_stage preflight "Preflight" \

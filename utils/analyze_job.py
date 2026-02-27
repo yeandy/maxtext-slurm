@@ -59,11 +59,11 @@ RE_STEP_LINE = re.compile(
     r"TFLOP/s/device:\s*([0-9.]+),\s*MFU:\s*([0-9.]+)%,\s*"
     r"Tokens/s/device:\s*([0-9.]+).*?loss:\s*([0-9.]+)"
 )
-RE_NNODES = re.compile(r"^(?:NNODES|SLURM_JOB_NUM_NODES)\s*=\s*(\d+)", re.MULTILINE)
-RE_NODELIST = re.compile(r"^(?:SLURM_JOB_NODELIST|JOB_NODELIST)\s*=\s*(.+)", re.MULTILINE)
-RE_JOB_NAME = re.compile(r"^(?:SLURM_JOB_NAME|JOB_NAME)\s*=\s*(.+)", re.MULTILINE)
+RE_NUM_NODES = re.compile(r"^(?:NUM_NODES|NNODES|SLURM_JOB_NUM_NODES)\s*=\s*(\d+)", re.MULTILINE)
+RE_NODELIST = re.compile(r"^(?:JOB_NODELIST|SLURM_JOB_NODELIST)\s*=\s*(.+)", re.MULTILINE)
+RE_JOB_NAME = re.compile(r"^(?:JOB_NAME|SLURM_JOB_NAME)\s*=\s*(.+)", re.MULTILINE)
 RE_MODEL_NAME = re.compile(r"^MODEL_NAME\s*=\s*(.+)", re.MULTILINE)
-RE_JOB_ID_HEADER = re.compile(r"^(?:SLURM_JOB_ID|JOB_ID)\s*=\s*(.+)", re.MULTILINE)
+RE_JOB_ID_HEADER = re.compile(r"^(?:JOB_ID|SLURM_JOB_ID)\s*=\s*(.+)", re.MULTILINE)
 RE_EXP_TAG = re.compile(r"^EXP_TAG\s*=\s*(.+)", re.MULTILINE)
 RE_RAY_ACTOR = re.compile(r"MaxTextTrainerActor")
 RE_PASSTHROUGH = re.compile(r'^PASSTHROUGH_ARGS\s*=\s*"?(.*?)"?\s*$', re.MULTILINE)
@@ -214,7 +214,7 @@ def _job_time_window(job_dir: Path, log_file: Path | None) -> tuple[float, float
     submission time) and the log file mtime + 60 s buffer as the end proxy.
     The buffer accounts for profiles captured after the last log write
     (e.g. killed jobs with periodic profiling).  Kept small to avoid
-    overlapping with back-to-back SLURM jobs on the same nodes.
+    overlapping with back-to-back jobs on the same nodes.
     """
     start: float | None = None
     art_dir = job_dir / "artifact"
@@ -284,10 +284,10 @@ def _log_has_tgs_data(log_file: Path) -> bool:
         return False
 
 
-def slurm_nodelist_first(nodelist: str) -> str:
-    """Return the first hostname from a Slurm NODELIST string.
+def nodelist_first(nodelist: str) -> str:
+    """Return the first hostname from a NODELIST string.
 
-    Handles bracket notation (``chi[2815-2817,2820]`` → ``chi2815``),
+    Handles Slurm bracket notation (``chi[2815-2817,2820]`` → ``chi2815``),
     comma-separated (``node01,node02`` → ``node01``), and plain strings.
     """
     bracket = nodelist.find("[")
@@ -303,16 +303,15 @@ def slurm_nodelist_first(nodelist: str) -> str:
 def _parse_node0_hostname(log_text: str | None) -> str | None:
     """Extract node 0's hostname from the log header.
 
-    Matches ``SLURM_JOB_NODELIST=`` (Slurm jobs via ``_job.sbatch``) or
-    ``JOB_NODELIST=`` (local runs via ``run_setup.sh``).  Falls back to
-    ``HOSTNAME=`` for legacy logs.
+    Matches ``JOB_NODELIST=`` (all entry points) or ``SLURM_JOB_NODELIST=``
+    (legacy Slurm logs).  Falls back to ``HOSTNAME=`` for older logs.
     """
     if not log_text:
         return None
     header = log_text[:2000]
     m = RE_NODELIST.search(header)
     if m:
-        return slurm_nodelist_first(m.group(1).strip())
+        return nodelist_first(m.group(1).strip())
     m = re.search(r"^HOSTNAME\s*=\s*(\S+)", header, re.MULTILINE)
     if m:
         return m.group(1).strip()
@@ -359,7 +358,7 @@ def _parse_log_metadata(text: str, log_file: Path) -> dict:
     if m:
         meta["model"] = m.group(1).strip()
 
-    m = RE_NNODES.search(header)
+    m = RE_NUM_NODES.search(header)
     if m:
         meta["num_nodes"] = int(m.group(1))
 

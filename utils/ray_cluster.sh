@@ -291,8 +291,7 @@ Ray logs are persisted per node under:
 Tip: Port conflict when monitoring multiple jobs?
   Change local port: -L 18265:... -> localhost:18265
 
-Debug:
-  srun --jobid=\${SLURM_JOB_ID} --pty bash
+Debug (get a shell on a job node, then inspect Ray):
   ray list actors / ray status
 ==============================================
 EOF
