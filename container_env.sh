@@ -18,7 +18,7 @@ fi
 # ── end Registry credentials ──────────────────────────────────────────────────
 
 # ── Docker image ──────────────────────────────────────────────────────────────
-DOCKER_IMAGE="${DOCKER_IMAGE:-rocm/jax-training:maxtext-v26.1}"
+DOCKER_IMAGE="${DOCKER_IMAGE:-rocm/jax-training:maxtext-v26.2}"
 DOCKER_IMAGE_HAS_AINIC="${DOCKER_IMAGE_HAS_AINIC:-true}"    # Set to false only if you know the image lacks AINIC
 MAXTEXT_REPO_DIR="${MAXTEXT_REPO_DIR:-/workspace/maxtext}"  # MaxText location inside the container
 MAXTEXT_PATCH_BRANCH="${MAXTEXT_PATCH_BRANCH:-}"            # Hotfix/debug branch to check out at startup (empty = use image default)
