@@ -79,6 +79,9 @@ else
     unset LD_PRELOAD
 fi
 
+# MaxText expects NNODES for JAX distributed init.
+export NNODES="${NUM_NODES:-1}"
+
 echo "Show all environment variables:"
 printenv | sort
 
