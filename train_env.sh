@@ -114,7 +114,11 @@ export NVTE_USE_ROCM=1
 export CK_TILE_FLOAT_TO_BFLOAT16_DEFAULT=2
 export NVTE_ALLOW_NONDETERMINISTIC_ALGO=1
 export NVTE_CK_HOW_V3_BF16_CVT=2
-#export NVTE_CK_IS_V3_ATOMIC_FP32=1 # Use default value from the docker image 
+# Forces FP32 precision for atomic accumulation in CK V3 GEMM output writes.
+# Critical for MoE convergence: BF16 atomics (=0) cause visibly slower loss
+# descent vs FP32 atomics (=1) due to accumulated rounding errors across many
+# experts and layers. Use default value from the docker image (likely =1).
+#export NVTE_CK_IS_V3_ATOMIC_FP32=1
 
 # ---- Compilation cache settings ----
 #export JAX_COMPILATION_CACHE_DIR="$OUTPUT_PATH/../jax_cache"
