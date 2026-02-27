@@ -59,7 +59,7 @@ RE_STEP_LINE = re.compile(
     r"TFLOP/s/device:\s*([0-9.]+),\s*MFU:\s*([0-9.]+)%,\s*"
     r"Tokens/s/device:\s*([0-9.]+).*?loss:\s*([0-9.]+)"
 )
-RE_NUM_NODES = re.compile(r"^(?:NUM_NODES|NNODES|SLURM_JOB_NUM_NODES)\s*=\s*(\d+)", re.MULTILINE)
+RE_NNODES = re.compile(r"^(?:NNODES|SLURM_JOB_NUM_NODES)\s*=\s*(\d+)", re.MULTILINE)
 RE_NODELIST = re.compile(r"^(?:JOB_NODELIST|SLURM_JOB_NODELIST)\s*=\s*(.+)", re.MULTILINE)
 RE_JOB_NAME = re.compile(r"^(?:JOB_NAME|SLURM_JOB_NAME)\s*=\s*(.+)", re.MULTILINE)
 RE_MODEL_NAME = re.compile(r"^MODEL_NAME\s*=\s*(.+)", re.MULTILINE)
@@ -358,7 +358,7 @@ def _parse_log_metadata(text: str, log_file: Path) -> dict:
     if m:
         meta["model"] = m.group(1).strip()
 
-    m = RE_NUM_NODES.search(header)
+    m = RE_NNODES.search(header)
     if m:
         meta["num_nodes"] = int(m.group(1))
 

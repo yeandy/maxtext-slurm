@@ -52,7 +52,7 @@ echo "$HOST | THP after  | enabled: $thp_enabled | defrag: $thp_defrag"
 
 
 # ---- Network checks (multi-node only) ----
-_num_nodes="${NUM_NODES:-1}"
+_num_nodes="${NNODES:-1}"
 if [[ "$_num_nodes" -le 1 ]]; then
     echo "$HOST | [NETWORK_CHECKS] skipped (single-node job)"
 else

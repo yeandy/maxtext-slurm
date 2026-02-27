@@ -225,12 +225,12 @@ def process_file(file: Path, cleanup: bool, force: bool = False) -> int:
     # ── num_nodes from header (KEY=VALUE format) ──
     num_nodes = None
     for line in lines[:20]:
-        m = re.match(r"^(?:NUM_NODES|NNODES|SLURM_JOB_NUM_NODES)\s*=\s*(\d+)", line)  # NNODES/SLURM_* for old logs
+        m = re.match(r"^(?:NNODES|SLURM_JOB_NUM_NODES)\s*=\s*(\d+)", line)
         if m:
             num_nodes = int(m.group(1))
             break
     if num_nodes is None:
-        return fail("NUM_NODES=<int> not found in log header", rc=3)
+        return fail("NNODES=<int> not found in log header", rc=3)
 
     # ── check if job is still running (used by rename and cleanup guards) ──
     running = _is_job_running(text, file)
@@ -565,7 +565,7 @@ arguments:
 
 file requirements:
   - .log or .out extension
-  - NUM_NODES=<int> in the log header
+  - NNODES=<int> in the log header
   - Must contain "Tokens/s/device:" lines
 
 steady-state measurement:
@@ -577,7 +577,7 @@ exit status:
   0  Success
   1  File not found / not a regular file / not .log/.out / no files to process
   2  No Tokens/s/device lines found (or no steady-state data)
-  3  NUM_NODES not found in log header
+  3  NNODES not found in log header
 
 examples:
   %(prog)s                                    # latest log in default outputs dir

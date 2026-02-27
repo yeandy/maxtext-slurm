@@ -116,7 +116,7 @@ in_container_run.sh 70b -- steps=5                     # quick test
 in_container_run.sh 70b -- steps=5 remat_policy=full   # try a different config
 ```
 
-Environment variables (`JAX_COORDINATOR_IP`, `NUM_NODES`, etc.) default to single-node local values but can be overridden for multi-node setups. `JOB_WORKSPACE` defaults to `/outputs` inside the container or `outputs/` for native runs. `container_env.sh` overrides (e.g. `MAXTEXT_REPO_DIR=…`, `MAXTEXT_PATCH_BRANCH=…`) also work — `DOCKER_IMAGE` and other container-launch settings are ignored since the container is already running.
+Environment variables (`JAX_COORDINATOR_IP`, `NNODES`, etc.) default to single-node local values but can be overridden for multi-node setups. `JOB_WORKSPACE` defaults to `/outputs` inside the container or `outputs/` for native runs. `container_env.sh` overrides (e.g. `MAXTEXT_REPO_DIR=…`, `MAXTEXT_PATCH_BRANCH=…`) also work — `DOCKER_IMAGE` and other container-launch settings are ignored since the container is already running.
 
 ## Checkpointing
 
