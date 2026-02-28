@@ -24,8 +24,8 @@ export NNODES="$SLURM_JOB_NUM_NODES"
 # NODE_RANK and JAX_COORDINATOR_IP are per-task — mapped in NODE_REPORT below.
 # SLURM_NODEID and SLURM_LAUNCH_NODE_IPADDR are set by srun, not sbatch.
 export JOB_NODELIST="$SLURM_JOB_NODELIST"
-export LOGIN_NODE_HOSTNAME="${USER}@${SLURM_SUBMIT_HOST}"
-export LOGIN_NODE_IP="${USER}@${SLURM_SUBMIT_HOST}"
+export LOGIN_NODE_HOSTNAME="${LOGIN_NODE_HOSTNAME:-${USER}@${SLURM_SUBMIT_HOST}}"
+export LOGIN_NODE_IP="${LOGIN_NODE_IP:-${USER}@${SLURM_SUBMIT_HOST}}"
 export NODELIST_EXPANDED=$(scontrol show hostnames "$SLURM_JOB_NODELIST" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
 
 source "$SCRIPT_DIR/utils/pick_port.sh"

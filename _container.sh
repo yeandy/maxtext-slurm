@@ -45,8 +45,9 @@ JOB_NAME="${JOB_NAME:-unknown}"
 NNODES="${NNODES:-1}"
 NODE_RANK="${NODE_RANK:-0}"
 JAX_COORDINATOR_IP="${JAX_COORDINATOR_IP:-}"
+source "$SCRIPT_DIR/utils/detect_ip.sh"
 LOGIN_NODE_HOSTNAME="${LOGIN_NODE_HOSTNAME:-${USER}@$(hostname -s)}"
-LOGIN_NODE_IP="${LOGIN_NODE_IP:-${USER}@$(hostname -s)}"
+LOGIN_NODE_IP="${LOGIN_NODE_IP:-${USER}@$(detect_ip)}"
 NODELIST_EXPANDED="${NODELIST_EXPANDED:-}"
 
 # Derived paths (job directory naming defined in utils/job_dir.sh).
