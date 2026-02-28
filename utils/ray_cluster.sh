@@ -63,6 +63,11 @@ _run_with_watchdog() {
     [[ "${1:-}" == "--" ]] && shift
 
     (
+        # Close inherited stdout/stderr so this subshell does not hold open
+        # any parent pipe (e.g. the tee pipeline in in_container_run.sh).
+        # All watchdog output goes to $log_file explicitly.
+        exec >/dev/null 2>&1
+
         local restarts=0
         while true; do
             "$@" >>"$log_file" 2>&1 &
