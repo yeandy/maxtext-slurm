@@ -251,7 +251,9 @@ server.serve_forever()
 
     # Kill the HTTP server when the parent bash process exits, so it
     # doesn't get orphaned (reparented to PID 1) and hold the port.
-    trap "kill $HTTP_PID 2>/dev/null; wait $HTTP_PID 2>/dev/null" EXIT INT TERM
+    trap "kill $HTTP_PID 2>/dev/null; wait $HTTP_PID 2>/dev/null" EXIT
+    trap "exit 143" TERM
+    trap "exit 130" INT
 }
 
 # ---------------------------------------------------------------------------
@@ -274,9 +276,13 @@ main() {
     # Initial collection
     collect_metrics
 
-    # Poll loop
+    # Poll loop — sleep is backgrounded so `wait` (a builtin) is the
+    # foreground command.  Bash processes trapped signals immediately
+    # during `wait`, unlike foreground external commands (sleep) where
+    # the signal is queued until the command finishes.
     while true; do
-        sleep "$POLL_INTERVAL"
+        sleep "$POLL_INTERVAL" &
+        wait $! 2>/dev/null || true
         collect_metrics
     done
 }

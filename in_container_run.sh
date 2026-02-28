@@ -14,6 +14,24 @@ _JOB_START=$SECONDS
 
 source "$SCRIPT_DIR/utils/run_setup.sh"
 
+# Override the EXIT trap (run_setup.sh installs _print_summary) to include
+# Ray cleanup.  Ensures stop_ray_cluster runs even when set -eo pipefail
+# aborts before inline cleanup — prevents leaked watchdog/metrics_exporter
+# processes that hold NFS file handles.
+_cleanup_and_summary() {
+    local _trap_rc=${_RUN_RC:-$?}
+    if [[ "${USE_RAY:-false}" == "true" ]]; then
+        source "$SCRIPT_DIR/utils/ray_cluster.sh" 2>/dev/null || true
+        stop_ray_cluster 2>/dev/null || true
+    fi
+    if declare -f wait_for_coredump &>/dev/null; then
+        wait_for_coredump 2>/dev/null || true
+    fi
+    _RUN_RC=$_trap_rc
+    _print_summary
+}
+trap _cleanup_and_summary EXIT
+
 # ============================================================================
 # Container-internal setup (replaces _container.sh's SETUP_CMDS)
 # ============================================================================
@@ -71,19 +89,5 @@ fi
 "$MAXTEXT_RUNNER" "$MODEL_NAME" -- "${PASSTHROUGH_ARGS[@]}" 2>&1 | tee -a "$LOG_FILE"
 # Capture training exit code (not tee's) so _print_summary reports correctly
 _RUN_RC=${PIPESTATUS[0]}
-
-# _train_with_ray.sh registers an EXIT trap for cleanup but then does
-# exec _train.sh, which replaces the process and discards the trap.
-# In the Docker path the container exit kills everything; here we must
-# stop Ray and Prometheus explicitly.
-if [[ "${USE_RAY:-false}" == "true" ]]; then
-    source "$SCRIPT_DIR/utils/ray_cluster.sh"
-    stop_ray_cluster
-fi
-
-# Wait for any in-progress core dump before exiting
-if declare -f wait_for_coredump &>/dev/null; then
-    wait_for_coredump
-fi
 
 exit "${_RUN_RC:-1}"
