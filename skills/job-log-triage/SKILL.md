@@ -1,6 +1,6 @@
 ---
 name: job-log-triage
-description: Triage MaxText training jobs from log files — failed, hanging, running, or completed. Use when the user asks why a job failed, wants to diagnose an error, sees a crash, hang, timeout, OOM, NCCL error, heartbeat timeout, or wants to understand a job's status.
+description: Triage MaxText training jobs from log files — failed, hanging, running, or completed. Use when the user asks why a job failed, wants to diagnose an error, sees a crash, hang, timeout, OOM, NCCL error, heartbeat timeout, wants to understand a job's status, or asks about bad/low/dropping TGS or throughput.
 ---
 
 # Job Log Triage
@@ -67,6 +67,8 @@ Classify a job's status and failure mode from its log file and recommend targete
 
    Include these projections in the report — they make stalls obvious (expected step 2000 but last step is 316 = hung for hours) and quantify the cost of the failure.
 
+   **TGS trend check (proactive).** When extracting step times, also check for TGS degradation — even if the user didn't ask about it. Compare the TGS of the last 10 steps against the steady-state average (steps 5-15). If the recent TGS is >10% below the early average, flag it as `tgs-degradation` in the report's "Additional findings" section, note the magnitude and step range of the drop, and include the TGS degradation next-step template in the recommendations. A job can "succeed" (complete all steps, exit 0) while having run 20-30% slower than it should have — catching this proactively saves significant GPU-hours on subsequent runs.
+
 6. **For `RAY=1` jobs:** Search the log for the SSH tunnel command (look for `ssh -L` near the start of training). Extract the head node hostname and Prometheus port from the tunnel command (e.g., `ssh -L ...:HOST:PORT`; the port defaults to 9190 but may differ). Include the tunnel command, hostname, and port in the report.
    - **Job still live** (running or hanging): the live Prometheus is at `http://<head_host>:<port>` — query it directly from the head node's network. The port defaults to 9190 but may auto-increment if occupied; check the log for the actual port (look for `[Prometheus] Started on port` or the SSH tunnel command). Do **not** use `localhost:9090`, which may be a different Prometheus (e.g., cluster-level monitor). The SSH tunnel command in the log is for the **user's laptop** to reach the head node through a jump host — it binds ports on the user's local machine, not on the head node. Ask the user if they want you to set up port forwarding to access the Ray Dashboard (8265), TensorBoard (6006), and Prometheus on their local machine.
    - **Job already ended** (completed, failed, or cancelled): live dashboards are gone — do not attempt to query them. For post-hoc analysis, use `utils/prometheus.sh view <job_dir>/prometheus` to start a read-only Prometheus against the persisted TSDB. If you gathered evidence from live queries earlier in the conversation, include those results.
@@ -113,6 +115,12 @@ Scan the log for these signatures, in priority order (first match wins the prima
 | **signal-kill** | `Training subprocess killed by` | Training process killed by signal (SIGSEGV, SIGABRT, etc.) |
 | **subprocess-fail** | `Training subprocess exited with code` | Training process exited non-zero (read preceding output) |
 | **actor-fail** | `Actor failed:` | Ray actor exception (includes traceback) |
+
+### Training performance issues (job running but underperforming)
+
+| Class | Detection method | What happened |
+|-------|-----------------|---------------|
+| **tgs-degradation** | TGS drops >10% below early steady-state average and stays low, or TGS steadily declines over time. Detected from `completed step:` lines in worker logs — not a log error signature. | Network (RDMA retransmit), resource contention, or hardware degradation slowing collective communication. The job runs without errors but significantly underperforms. |
 
 ### Job-level status
 
@@ -196,6 +204,48 @@ When `RESOURCE_EXHAUSTED: Out of memory while trying to allocate` appears:
    - Try `remat_policy=full` (if not already set)
    - Reduce `XLA_PYTHON_CLIENT_MEM_FRACTION` if RCCL/NCCL buffer allocation errors appear (too high)
    - The sweet spot is typically `.85`–`.93`; above `.93` risks starving RCCL/NCCL of communication buffer memory
+
+## TGS degradation diagnosis
+
+When a job is running (or completed) but TGS is lower than expected or dropping over time. This is not a crash or hang — the job produces no error signatures — but it is a performance failure that needs diagnosis.
+
+**Step 1: Extract the TGS timeline from worker logs.**
+
+For `RAY=1` jobs, use the authoritative worker log (not the truncated Slurm log):
+
+```bash
+grep "completed step:" <job_dir>/ray_logs/<head_node>/worker*.out 2>/dev/null | \
+  sed 's/.*completed step: //' | \
+  awk -F', ' '{step=$1; for(i=1;i<=NF;i++){if($i~/Tokens\/s\/device/){split($i,a,": ");tgs=a[2]}; if($i~/seconds/){split($i,a,": ");secs=a[2]}}; printf "step=%-5s  secs=%s  TGS=%s\n", step, secs, tgs}'
+```
+
+Compute the steady-state average (skip warmup steps 0-4 relative to first step) and look for deviations >10%.
+
+**Step 2: Identify the degradation pattern.**
+
+| Pattern | What it looks like | Most likely cause |
+|---------|--------------------|-------------------|
+| **Constant drop** | TGS drops by a fixed amount (e.g., 3290→2520) and stays there. Step time increases by a constant delta on every step. | RDMA retransmits on one or more nodes — bad cable, port, or switch. Every collective is uniformly slowed. |
+| **Phased drops** | TGS drops, recovers, then drops again (possibly deeper). Multiple distinct performance levels. | Multiple nodes with RDMA issues taking turns — one node's link degrades, recovers, then a different node degrades. |
+| **Gradual increase in step time** | Step time slowly grows over many steps (not a sudden jump). | Resource leak — CPU contention from leaked RCCL communicator threads (see "Checkpointing interference" in TSDB diagnosis skill), memory pressure, or accumulating background processes. |
+| **Periodic spikes** | Step time spikes every N steps, then returns to normal. | Checkpoint saves (match N against `checkpoint_period`). Expected behavior — not a degradation. |
+| **One-time drop** | TGS drops once and never recovers. | Hardware event — a NIC, cable, or GPU partially failed at that moment. |
+
+**Step 3: Check for known log-level causes.**
+
+Before escalating to TSDB, check the worker logs for:
+- **Checkpoint restore:** Was this job restored from a checkpoint (`restoring from this run's directory step N`)? Restored jobs can leak RCCL communicator threads — see "Checkpointing interference" in `skills/tsdb-diagnosis/SKILL.md`. Compare TGS against a known-good fresh-start run with the same config.
+- **XLA recompilation:** Look for repeated `Compiling module` messages after the initial compilation. Unexpected recompilation mid-training causes step time spikes.
+- **Profiler hooks:** If `profiler=xplane` is set with a specific step range, the profiled steps may be slower. Check if the TGS drop coincides with the profiler step range.
+
+**Step 4: Escalate to TSDB for root cause.**
+
+For `RAY=1` jobs, the Prometheus TSDB is the definitive tool for diagnosing TGS degradation. Report the TGS pattern (from step 2) and recommend:
+- **Constant or phased drops:** TSDB Playbook 6 (Network Health) — query RDMA retransmits per host during the drop window. See the RDMA degradation signature and phase correlation technique in the TSDB skill.
+- **Gradual increase:** TSDB Playbook 7 (Training Stability) contention checklist — check `hw_procs_running`, memory pressure, I/O pressure.
+- **One-time drop:** TSDB Playbook 4 (Hardware) + Playbook 6 (Network) — check for RAS errors, thermal events, and network state changes at the drop timestamp.
+
+**Including TGS analysis in the triage report:** When TGS data is available, add a `### TGS analysis` section to the triage report showing the steady-state average, any degradation pattern detected, the affected step range, and the magnitude of the drop (e.g., "3290 → 2520, -23%"). This information is critical for multi-job comparisons and for deciding whether a "successful" job actually needs investigation.
 
 ## Diagnosing "unknown-death" (no JOB SUMMARY)
 
@@ -283,6 +333,7 @@ Report findings in this structure:
 | **cancelled** | Cancellation is the mechanism, not the root cause. 1. Check training progress projection — if the last step is far behind the expected step, the real issue is a **hang** killed by scancel. 2. Check for preceding errors (NCCL, OOM, heartbeat). Report the underlying cause as primary failure. If no underlying issue, no action needed. |
 | **node-fail** | 1. Identify which nodes failed. 2. Read their task output. 3. For exit 137: likely OOM. For exit 134/139: check core dumps. |
 | **unknown-death** | 1. Check `dmesg` for OOM kills. 2. Check Slurm state: `scontrol show job <id>`. 3. If recurring: run with `RAY=1` for TSDB diagnostics. |
+| **tgs-degradation** | 1. Extract TGS timeline from worker logs (see TGS degradation diagnosis above). 2. Identify the degradation pattern (constant drop, phased, gradual, periodic). 3. For `RAY=1` jobs: query TSDB — Playbook 6 (Network Health) for RDMA retransmits per host, Playbook 7 (Training Stability) contention checklist. **Constant drops point to RDMA issues; gradual increases point to resource leaks.** 4. Identify the offending nodes from per-host RDMA retransmit rates. 5. Resubmit with `--exclude=<bad_nodes>` targeting nodes with RDMA retry exhaustion or sustained RDMA retransmits (see node exclusion prioritization in TSDB skill). |
 | **ray-start-fail** | Non-critical — training falls back to non-Ray mode. If observability is needed: 1. Check port conflicts. 2. Check Ray logs in job dir. |
 
 ## Known-harmless log entries
@@ -295,6 +346,7 @@ These patterns appear in normal, healthy jobs. Do **not** classify them as failu
 | `NCCL WARN MSCCL++: Feature not enabled` | RCCL init notice — MSCCL++ is a compile-time feature not enabled in the current build. Appears on every RCCL job. |
 | `Token indices sequence length is longer than the specified maximum sequence length` | HuggingFace tokenizer truncation warning. The model handles this internally; not an error. |
 | `OCI runtime exec failed` + `[exec] docker exec failed ... falling back to host-level kill` + `[cgroup] Sent SIGKILL to 0/0 processes` | Preflight cleanup killing stale containers from a previous job. The `0/0 processes` confirms there was nothing left to kill. |
+| `OCI runtime exec failed: exec failed: unable to start container process: error executing setns process: exit status 1: unknown` (standalone, during teardown) | Container namespace teardown race — the container exited before Docker could exec into it for cleanup. Common during job cancellation or when containers shut down quickly. No data loss or training impact. |
 | `Cannot read CPU core N` (topology.cc) | XLA/ROCm topology probe on cores outside the container's cgroup. Harmless. |
 | `No hardware is found. Using default TPU version: jellyfish` | XLA probes for TPU on a GPU node. Expected, falls back to GPU. |
 | `No device identifiers found` (trace.cc) | XLA tracing probe. Harmless. |

@@ -832,12 +832,28 @@ Anomalous GPUs: <list of host:gpu with any non-zero errors or outlier metrics>
 | 10 | `rate(hw_tcp_abort_on_timeout_total[5m])` | TCP connections aborted | Any > 0 = severe |
 
 **Interpretation:**
-- **TCP retransmits only, no RDMA errors** → IP/TCP path issue (NFS, coordinator gRPC), not the NCCL/RCCL data path.
-- **RDMA retransmits + ACK timeouts on specific devices** → bad cable, bad port, or switch issue on that link. Identify the device and port labels.
+- **TCP retransmits only, no RDMA errors** → IP/TCP path issue (NFS, coordinator gRPC), not the NCCL/RCCL data path. **Critical: high TCP retransmits alone do NOT degrade training TGS.** TCP carries NFS (checkpoint I/O, data loading) and gRPC (coordinator heartbeats), but RCCL collectives use RDMA. A job can have thousands of TCP retransmits/sec and still achieve full TGS if RDMA is clean.
+- **RDMA retransmits + ACK timeouts on specific devices** → bad cable, bad port, or switch issue on that link. Identify the device and port labels. **This is the #1 cause of unexplained TGS degradation.** Even a few nodes with sustained RDMA retransmits can cause 20-30% TGS degradation cluster-wide because all-to-all collectives are synchronous — the slowest RDMA link bounds every node in every step.
 - **Congestion notifications (CNP) across many nodes** → switch-level congestion. May need ECN tuning or traffic engineering.
-- **Retry exhaustion** → packets permanently lost. Indicates a hard link failure, not transient congestion.
+- **Retry exhaustion** → packets permanently lost. Indicates a hard link failure, not transient congestion. Nodes with retry exhaustion should be top priority for exclusion.
 - **Port state 0** → RDMA link is down. Physical layer issue. Check cable and switch port.
 - **Correlate with training events** — if retransmits spike at the same time as a step time increase or hang, the network event caused the training issue.
+
+**RDMA degradation signature in training metrics:**
+- RDMA-induced TGS drops appear as a **constant step-time increase** (not variable spikes), because every step's collective communication is uniformly slowed by the degraded link. This distinguishes RDMA issues from transient events (which cause isolated spikes) and checkpoint saves (which are periodic).
+- **Phase correlation:** Map RDMA retransmit bursts on specific nodes to TGS degradation phases. If TGS drops when RDMA retransmits spike on node X, recovers when node X stops retransmitting, and drops again when node Y starts retransmitting, this proves a causal link. Use `rate(hw_rdma_tx_retx_pkts_total[5m])` per host alongside `tb_perf_per_device_tokens_per_sec` over the same time window.
+- **Recovery test:** When RDMA retransmits cease on the offending nodes, TGS should recover to baseline within 1-2 steps. If TGS does not recover after retransmits stop, there is an additional or different root cause.
+
+**Node exclusion prioritization** (when spare nodes are limited):
+
+| Priority | Condition | Rationale |
+|----------|-----------|-----------|
+| 1 (highest) | RDMA retry exhaustion (`hw_rdma_req_tx_retry_excd_err_total` > 0) | Permanent packet loss — hard link failure |
+| 2 | Sustained RDMA retransmits + ACK timeouts | Active link degradation slowing every collective |
+| 3 | High CNP (congestion notifications) | Network congestion — may be switch-level, not node-level |
+| 4 (lowest) | TCP retransmits only | No RDMA impact — does not affect training TGS |
+
+Nodes with only TCP retransmit issues should **not** be excluded unless they also show RDMA problems. If spare capacity is limited, focus exclusions on priority 1-2 nodes.
 
 ---
 
@@ -953,10 +969,11 @@ A throughput difference caused by a one-time network blip in job B is not a syst
 Run the **contention checklist** from Playbook 7 on both jobs at their overlapping step range. Compare each contention source side by side — CPU, network (TCP and RDMA), storage I/O, memory, GPU thermal, GPU hardware, and training-level metrics. The root cause is often a single metric family that differs between jobs while all others are identical.
 
 **Key metrics for multi-job TGS comparison:**
-- `hw_procs_running` — most common differentiator. A uniform delta across all hosts points to a software-level resource leak (see "Checkpointing interference"). A per-node delta points to background processes or different node allocations.
 - `tb_perf_per_device_tokens_per_sec` — the TGS metric itself. Compare steady-state averages and variance.
 - `tb_perf_step_time_seconds` — step time. Inverse of TGS but more sensitive to outliers (checkpoint saves, profiler hooks).
-- `rate(hw_tcp_retransmits_total[5m])` and `rate(hw_rdma_tx_retx_pkts_total[5m])` — network retransmits. If one job ran during a network event, this explains transient TGS dips.
+- `rate(hw_rdma_tx_retx_pkts_total[5m])` per host — **the most impactful differentiator for identical-config jobs on different node sets.** RDMA retransmits directly slow RCCL collectives, and even a few bad nodes cause cluster-wide TGS degradation (20-30%). Use the phased correlation technique from Playbook 6 to map RDMA bursts on specific nodes to TGS degradation phases. Also check `sum(hw_rdma_req_tx_retry_excd_err_total) by (host)` for permanent packet loss.
+- `hw_procs_running` — most common differentiator for identical-node-set comparisons. A uniform delta across all hosts points to a software-level resource leak (see "Checkpointing interference"). A per-node delta points to background processes or different node allocations.
+- `rate(hw_tcp_retransmits_total[5m])` — TCP retransmits. **Important: high TCP retransmits alone do NOT explain TGS differences** (TCP carries NFS/gRPC, not RCCL). A job with higher TCP retransmits can still have higher TGS if its RDMA is clean. Do not chase TCP retransmits as a TGS root cause unless RDMA is also affected.
 
 ### 7. Deepen with logs and source code
 
@@ -1003,7 +1020,9 @@ Hard-won lessons from real diagnosis sessions. Avoid these mistakes:
 
 7. **Assuming host memory contention affects GPU training.** For GPU training, the GPU compute path is largely independent of host memory usage. A spike in host memory (e.g., from checkpoint saves) does not directly slow GPU computation unless it triggers OOM or swapping. Focus on CPU contention (`hw_procs_running`), network contention, and GPU-level metrics.
 
-8. **Assuming `jax.clear_caches()` cleans up RCCL communicators.** `jax.clear_caches()` only clears Python-level JIT compilation caches (traced in `jax/_src/api.py`). RCCL/NCCL communicators live in XLA's C++ GPU clique cache (`GpuCliqueKey → LockableGpuClique` in `xla/backends/gpu/collectives/gpu_cliques.h`), which has no eviction mechanism and no Python-accessible release API. The only way to destroy them is `jax.clear_backends()`, which tears down the entire JAX runtime and is unusable mid-training. When diagnosing RCCL resource leaks (e.g., from single-replica restore), do not recommend `jax.clear_caches()` — it has been tested and confirmed ineffective.
+8. **Treating high absolute RDMA counters as proof of current degradation.** `hw_rdma_tx_retx_pkts_total` and similar RDMA counters are cumulative from boot (or driver reload), not from job start. A node showing 90M cumulative retransmits may have accumulated them over weeks of previous jobs and have zero retransmits during the current job. Always use `rate()` queries within the job's time window to assess current impact. For quick triage, compare `sum(hw_rdma_tx_retx_pkts_total) by (host)` at job end vs job start — the delta is what matters, not the absolute value.
+
+9. **Assuming `jax.clear_caches()` cleans up RCCL communicators.** `jax.clear_caches()` only clears Python-level JIT compilation caches (traced in `jax/_src/api.py`). RCCL/NCCL communicators live in XLA's C++ GPU clique cache (`GpuCliqueKey → LockableGpuClique` in `xla/backends/gpu/collectives/gpu_cliques.h`), which has no eviction mechanism and no Python-accessible release API. The only way to destroy them is `jax.clear_backends()`, which tears down the entire JAX runtime and is unusable mid-training. When diagnosing RCCL resource leaks (e.g., from single-replica restore), do not recommend `jax.clear_caches()` — it has been tested and confirmed ineffective.
 
 ## Metric Reference
 
