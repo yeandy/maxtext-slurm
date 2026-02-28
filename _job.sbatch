@@ -21,9 +21,9 @@ _JOB_START=$SECONDS
 export JOB_ID="$SLURM_JOB_ID"
 export JOB_NAME="$SLURM_JOB_NAME"
 export NNODES="$SLURM_JOB_NUM_NODES"
-# NODE_RANK is per-task, not per-job — mapped in NODE_REPORT below.
+# NODE_RANK and JAX_COORDINATOR_IP are per-task — mapped in NODE_REPORT below.
+# SLURM_NODEID and SLURM_LAUNCH_NODE_IPADDR are set by srun, not sbatch.
 export JOB_NODELIST="$SLURM_JOB_NODELIST"
-export JAX_COORDINATOR_IP="$SLURM_LAUNCH_NODE_IPADDR"
 export LOGIN_NODE_HOSTNAME="${USER}@${SLURM_SUBMIT_HOST}"
 export LOGIN_NODE_IP="${USER}@${SLURM_SUBMIT_HOST}"
 export NODELIST_EXPANDED=$(scontrol show hostnames "$SLURM_JOB_NODELIST" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
@@ -105,9 +105,10 @@ trap _handle_cancel TERM
 # scancel) immediately and forward it.  With a foreground child, bash queues
 # signals until the child exits — but the child never exits because it never
 # received the signal, leaving orphaned containers.
-# NODE_RANK is mapped here (per-task) because SLURM_NODEID is set by srun,
-# not sbatch — unlike JOB_ID/NNODES which are batch-level exports above.
-NODE_REPORT='export NODE_RANK=${SLURM_NODEID:-0}; "$@" & _cpid=$!; trap "kill $_cpid 2>/dev/null" TERM INT; wait $_cpid 2>/dev/null; wait $_cpid 2>/dev/null; _rc=$?; [ $_rc -ne 0 ] && echo "NODE_EXIT host=$(hostname) exit=$_rc"; exit $_rc'
+# NODE_RANK and JAX_COORDINATOR_IP are mapped here (per-task) because
+# SLURM_NODEID and SLURM_LAUNCH_NODE_IPADDR are set by srun, not sbatch —
+# unlike JOB_ID/NNODES which are batch-level exports above.
+NODE_REPORT='export NODE_RANK=${SLURM_NODEID:-0}; export JAX_COORDINATOR_IP=${JAX_COORDINATOR_IP:-$SLURM_LAUNCH_NODE_IPADDR}; "$@" & _cpid=$!; trap "kill $_cpid 2>/dev/null" TERM INT; wait $_cpid 2>/dev/null; wait $_cpid 2>/dev/null; _rc=$?; [ $_rc -ne 0 ] && echo "NODE_EXIT host=$(hostname) exit=$_rc"; exit $_rc'
 
 # Per-host pre-flight setup.
 run_stage preflight "Preflight" \
