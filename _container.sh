@@ -316,6 +316,20 @@ fi
 if [[ -e /dev/infiniband ]]; then
     IB_DEVICE_OPTIONS=(--device /dev/infiniband)
 fi
+# Pensando AINIC QoS auto-detection (NCCL_IB_TC, NCCL_IB_FIFO_TC)
+source "$SCRIPT_DIR/utils/detect_ainic_nccl_ib_tc.sh"
+NCCL_IB_TC=""
+NCCL_IB_FIFO_TC=""
+if is_pensando; then
+    _tc=$(detect_pensando_tc)
+    NCCL_IB_TC=$(echo "$_tc" | awk '{print $1}')
+    NCCL_IB_FIFO_TC=$(echo "$_tc" | awk '{print $2}')
+    echo "[INFO] $HOSTNAME: Pensando AINIC detected: NCCL_IB_TC=$NCCL_IB_TC NCCL_IB_FIFO_TC=$NCCL_IB_FIFO_TC"
+    unset _tc
+else
+    echo "[INFO] $HOSTNAME: Not a Pensando AINIC cluster, no NCCL_IB_TC/NCCL_IB_FIFO_TC override needed"
+fi
+
 source "$SCRIPT_DIR/utils/choose_nccl_socket_ifname.sh"
 if nccl_nic=$(choose_nccl_socket_ifname); then
     NCCL_SOCKET_IFNAME="${nccl_nic}"
@@ -336,6 +350,8 @@ fi
 # an empty --env KEY= would override NCCL's internal auto-detection.
 NCCL_ENV_ARGS=()
 [[ -n "$NCCL_IB_HCA" ]] && NCCL_ENV_ARGS+=(--env "NCCL_IB_HCA=$NCCL_IB_HCA")
+[[ -n "$NCCL_IB_TC" ]] && NCCL_ENV_ARGS+=(--env "NCCL_IB_TC=$NCCL_IB_TC")
+[[ -n "$NCCL_IB_FIFO_TC" ]] && NCCL_ENV_ARGS+=(--env "NCCL_IB_FIFO_TC=$NCCL_IB_FIFO_TC")
 [[ -n "${NCCL_SOCKET_IFNAME:-}" ]] && NCCL_ENV_ARGS+=(--env "NCCL_SOCKET_IFNAME=$NCCL_SOCKET_IFNAME")
 
 # Print code provenance for this run.
