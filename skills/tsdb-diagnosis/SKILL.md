@@ -590,6 +590,29 @@ Checkpointing is one of the most disruptive periodic events in training. During 
 - When comparing metrics across jobs with different `checkpoint_period` values, normalize by excluding checkpoint steps from both.
 - Memory spikes during checkpoint saves are not OOM precursors unless they push the host to its limit. DP replica #0 nodes use ~2x model size in host RAM during saves — this is expected.
 
+**Expected NFS congestion during checkpoint writes:**
+
+Checkpoint-writing nodes (one per FSDP replica) write large model parameters to shared storage (VAST/NFS) simultaneously. This routinely causes:
+- **TCP retransmit rates of 500–3000/s** on checkpoint-writing nodes — this is NFS retransmitting during heavy writes and is **normal, not alarming**. Do not flag TCP retransmits during checkpoint windows as a network issue unless they also appear outside checkpoint windows.
+- **I/O pressure (`hw_io_pressure_full_pct`) up to 80%** — transient, lasts the duration of the checkpoint write (typically 5–8 minutes).
+- **10–20+ blocked processes (`hw_procs_blocked`)** per checkpoint-writing node — processes waiting on NFS I/O.
+- Non-checkpoint-writing nodes (remaining FSDP replicas) show near-zero I/O pressure and TCP retransmits during the same window.
+
+**Diagnosing checkpoint filesystem errors (`checkpoint-fs-error` from triage):**
+
+When a checkpoint write fails with an NFS-related error (e.g., `manifest.ocdbt.__lock` ENOENT), compare the I/O metrics at the failed checkpoint against previous successful checkpoints to assess whether NFS conditions were worse:
+
+```bash
+# For each checkpoint step, query peak I/O pressure and TCP retransmit rate:
+for ts in <ckpt_2600_ts> <ckpt_2800_ts>; do
+  end=$((ts+1800))
+  curl -s "http://localhost:<port>/api/v1/query_range?query=hw_io_pressure_full_pct&start=$ts&end=$end&step=30s"
+  curl -s "http://localhost:<port>/api/v1/query_range?query=rate(hw_tcp_retransmits_total%5B5m%5D)&start=$ts&end=$end&step=30s"
+done
+```
+
+Compare peak values per node across checkpoints. A significant increase in TCP retransmits or I/O pressure at the failing checkpoint (vs. previous successes) points to NFS congestion as the trigger. Also check `hw_procs_blocked` — the head node (task 0) is especially vulnerable because it runs additional I/O-intensive services (Prometheus TSDB, Ray GCS, dashboard) alongside the checkpoint writer.
+
 **Single-replica checkpoint restore and RCCL communicator leaks:**
 
 When `enable_single_replica_ckpt_restoring=true` and the job restores from a checkpoint, the restore code path leaks RCCL communicators and their background polling threads. This manifests as a **persistent increase in `hw_procs_running`** (~17 extra runnable threads per host on a 24-node / 3-replica MoE run) that appears immediately after restore and never recovers. The leaked threads create constant CPU contention — competing with data pipeline threads, RCCL coordination, and the Python runtime — causing a persistent throughput (TGS) drop of ~1%.

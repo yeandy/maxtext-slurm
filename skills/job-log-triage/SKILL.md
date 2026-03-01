@@ -115,6 +115,7 @@ Scan the log for these signatures, in priority order (first match wins the prima
 | **signal-kill** | `Training subprocess killed by` | Training process killed by signal (SIGSEGV, SIGABRT, etc.) |
 | **subprocess-fail** | `Training subprocess exited with code` | Training process exited non-zero (read preceding output) |
 | **actor-fail** | `Actor failed:` | Ray actor exception (includes traceback) |
+| **checkpoint-fs-error** | `Training stopped: Checkpointing failed`, `[Errno 2] No such file or directory: 'manifest.ocdbt.__lock'` | Checkpoint write failed due to NFS/storage filesystem error — **but the checkpoint may be intact** (see checkpoint filesystem error diagnosis below) |
 
 ### Training performance issues (job running but underperforming)
 
@@ -204,6 +205,56 @@ When `RESOURCE_EXHAUSTED: Out of memory while trying to allocate` appears:
    - Try `remat_policy=full` (if not already set)
    - Reduce `XLA_PYTHON_CLIENT_MEM_FRACTION` if RCCL/NCCL buffer allocation errors appear (too high)
    - The sweet spot is typically `.85`–`.93`; above `.93` risks starving RCCL/NCCL of communication buffer memory
+
+## Checkpoint filesystem error diagnosis
+
+When `Training stopped: Checkpointing failed. [Errno 2] No such file or directory: 'manifest.ocdbt.__lock'` (or similar OCDBT/filesystem errors) appears in a worker log:
+
+**Critical: the checkpoint may be intact.** The OCDBT checkpoint library treats any filesystem error during the lock/finalization phase as fatal and kills training — even if the checkpoint data was already written. The error is often a transient NFS metadata lookup failure, not actual data corruption.
+
+**Step 1: Check all workers, not just the one that errored.**
+
+For `RAY=1` jobs, search every worker's log for the checkpoint outcome:
+
+```bash
+for host in <job_dir>/ray_logs/*/; do
+  hostname=$(basename "$host")
+  grep -l "Saved a checkpoint at step <N>\|Checkpointing failed" "$host"/worker-*.out 2>/dev/null | while read f; do
+    echo "=== $hostname ==="
+    grep "Saved a checkpoint at step <N>\|Checkpointing failed" "$f"
+  done
+done
+```
+
+If most workers report "Saved a checkpoint at step N" and only one reports the error, the checkpoint is almost certainly intact. Confirm by checking that the checkpoint directory has its final name (e.g., `<N>`, not `<N>.tmp-*`).
+
+**Step 2: Extract checkpoint write duration.**
+
+The time to write each periodic checkpoint is visible in the step time of the **first step after each checkpoint**. The step that runs concurrently with the background checkpoint write takes much longer than normal because it blocks on the commit:
+
+```bash
+# For RAY=1 jobs — extract from authoritative worker log:
+for ckpt_step in 200 400 600 800 1000; do
+  next=$((ckpt_step+1))
+  echo -n "ckpt $ckpt_step -> step $next: "
+  grep "completed step: $next," <worker_log> | sed 's/.*seconds: //' | sed 's/,.*//'
+done
+```
+
+Normal training steps take ~30s; post-checkpoint steps of 300–500s indicate checkpoint writes of 5–8 minutes. **Compare this against `jax_distributed_heartbeat_timeout_seconds`** — if checkpoint write time approaches the heartbeat timeout, the job is at risk of a false heartbeat kill during a future checkpoint.
+
+**Step 3: Root cause — NFS/storage congestion.**
+
+Checkpoint-writing nodes (one per FSDP replica, typically the first N nodes where N = number of replicas) write large model parameters to shared storage (VAST/NFS) simultaneously. This causes:
+- TCP retransmit rates of 500–3000/s on checkpoint-writing nodes (NFS retransmissions)
+- I/O pressure (`hw_io_pressure_full_pct`) up to 80%
+- 10–20+ blocked processes (`hw_procs_blocked`) per node
+
+These are **expected during checkpoint writes** and are not alarming on their own. The `manifest.ocdbt.__lock` error occurs when the NFS congestion causes a transient metadata lookup failure — the NFS client returns ENOENT for a file that exists on the server. The OCDBT library does not retry, treating it as fatal.
+
+**Step 4: Head node vulnerability.**
+
+The Ray head node (task 0) is especially susceptible because it runs additional I/O-intensive services (Prometheus TSDB writes, Ray GCS, Ray dashboard) alongside the checkpoint writer. This additional NFS client-side load makes it more likely to hit transient lookup failures during congestion.
 
 ## TGS degradation diagnosis
 
@@ -334,6 +385,7 @@ Report findings in this structure:
 | **node-fail** | 1. Identify which nodes failed. 2. Read their task output. 3. For exit 137: likely OOM. For exit 134/139: check core dumps. |
 | **unknown-death** | 1. Check `dmesg` for OOM kills. 2. Check Slurm state: `scontrol show job <id>`. 3. If recurring: run with `RAY=1` for TSDB diagnostics. |
 | **tgs-degradation** | 1. Extract TGS timeline from worker logs (see TGS degradation diagnosis above). 2. Identify the degradation pattern (constant drop, phased, gradual, periodic). 3. For `RAY=1` jobs: query TSDB — Playbook 6 (Network Health) for RDMA retransmits per host, Playbook 7 (Training Stability) contention checklist. **Constant drops point to RDMA issues; gradual increases point to resource leaks.** 4. Identify the offending nodes from per-host RDMA retransmit rates. 5. Resubmit with `--exclude=<bad_nodes>` targeting nodes with RDMA retry exhaustion or sustained RDMA retransmits (see node exclusion prioritization in TSDB skill). |
+| **checkpoint-fs-error** | 1. **Check other workers' logs first** — the checkpoint may be intact despite the error (see checkpoint filesystem error diagnosis below). 2. If checkpoint is intact: resubmit restoring from that checkpoint; zero progress lost. 3. If checkpoint is corrupt: resubmit restoring from the previous periodic checkpoint. 4. For `RAY=1` jobs: query TSDB for I/O pressure (`hw_io_pressure_full_pct`) and TCP retransmits (`rate(hw_tcp_retransmits_total[5m])`) on checkpoint-writing nodes during the failure window. Compare against previous successful checkpoints to identify NFS degradation. 5. Check VAST/NFS storage health. |
 | **ray-start-fail** | Non-critical — training falls back to non-Ray mode. If observability is needed: 1. Check port conflicts. 2. Check Ray logs in job dir. |
 
 ## Known-harmless log entries
