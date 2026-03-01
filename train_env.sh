@@ -136,10 +136,10 @@ export NCCL_DMABUF_ENABLE=1
 export NCCL_GDRCOPY_ENABLE=1
 export NCCL_GDR_FLUSH_DISABLE=1
 export NCCL_IB_ECE_ENABLE=0
-export NCCL_IB_FIFO_TC=192
+# NOTE: NCCL_IB_TC and NCCL_IB_FIFO_TC: auto-detected on the host by _container.sh
+# and passed into the container via --env (see utils/detect_ainic_nccl_ib_tc.sh).
 export NCCL_IB_GID_INDEX=1
 export NCCL_IB_PCI_RELAXED_ORDERING=1
-export NCCL_IB_TC=104
 export NCCL_IB_USE_INLINE=1
 export NCCL_IGNORE_CPU_AFFINITY=1
 export NCCL_PXN_DISABLE=0
