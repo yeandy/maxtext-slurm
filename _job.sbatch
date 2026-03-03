@@ -61,6 +61,11 @@ echo "MODEL_NAME=$MODEL_NAME"
 if [[ -n "$MODEL_NAME_ALIAS" ]]; then echo "MODEL_NAME_ALIAS=$MODEL_NAME_ALIAS"; fi
 if [[ -n "$EXP_TAG" ]]; then echo "EXP_TAG=$EXP_TAG"; fi
 
+# Emit provenance once at job entry. Downstream node-level launchers inherit
+# MAXTEXT_GIT_SUMMARY_EMITTED=1 and skip duplicate emission.
+source "$SCRIPT_DIR/utils/code_provenance.sh"
+emit_code_provenance "$SCRIPT_DIR"
+
 # Stage timeouts — see utils/stage_timeout.sh for details.
 # Override: STAGE_TIMEOUTS="preflight:600,pull:1800" ./submit.sh ...
 source "$SCRIPT_DIR/utils/stage_timeout.sh"

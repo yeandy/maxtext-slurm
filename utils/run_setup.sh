@@ -129,7 +129,12 @@ ln -snf "../$JOB_DIR.log" "$JOB_WORKSPACE/$JOB_DIR/log"
 # Hold an append-mode fd to the log file. Unlike >> "$LOG_FILE" (which opens
 # by name), the fd follows the inode — so tgs_tagger -f can rename the file
 # mid-run and the JOB SUMMARY still lands in the correct (renamed) file.
-exec 3>>"$LOG_FILE"
+LOG_APPEND_FD=3
+exec {LOG_APPEND_FD}>>"$LOG_FILE"
+
+# Emit code provenance (git summary or artifact summary) once per run.
+source "$SCRIPT_DIR/utils/code_provenance.sh"
+emit_code_provenance "$SCRIPT_DIR" "" "$LOG_APPEND_FD"
 
 # ============================================================================
 # Job summary (EXIT trap; callers set _RUN_RC before exiting)
@@ -163,8 +168,8 @@ _print_summary() {
   Status: $status
 ================================================================="
     echo "$summary"
-    # Write via fd 3 (not by name) so the summary goes to the correct file
-    # even if tgs_tagger -f renamed it while the job was running.
-    echo "$summary" >&3 2>/dev/null
+    # Write via the append fd (not by name) so the summary goes to the
+    # correct file even if tgs_tagger -f renamed it while the job was running.
+    echo "$summary" >&$LOG_APPEND_FD 2>/dev/null
 }
 trap _print_summary EXIT

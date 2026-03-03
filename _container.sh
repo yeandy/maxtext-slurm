@@ -118,6 +118,11 @@ fi
 
 echo "[INFO] Execution mode: $MODE"
 
+# Emit provenance for entrypoints that bypass run_setup.sh/_job.sbatch
+# (e.g., run_local.sh with no args interactive, direct _container.sh use).
+source "$SCRIPT_DIR/utils/code_provenance.sh"
+emit_code_provenance "$SCRIPT_DIR"
+
 # Determine safe nofile limit
 MAX_NOFILE=$(cat /proc/sys/fs/nr_open 2>/dev/null || echo 1048576)
 NOFILE_LIMIT=$((MAX_NOFILE < 1048576 ? MAX_NOFILE : 1048576))
@@ -353,13 +358,6 @@ NCCL_ENV_ARGS=()
 [[ -n "$NCCL_IB_TC" ]] && NCCL_ENV_ARGS+=(--env "NCCL_IB_TC=$NCCL_IB_TC")
 [[ -n "$NCCL_IB_FIFO_TC" ]] && NCCL_ENV_ARGS+=(--env "NCCL_IB_FIFO_TC=$NCCL_IB_FIFO_TC")
 [[ -n "${NCCL_SOCKET_IFNAME:-}" ]] && NCCL_ENV_ARGS+=(--env "NCCL_SOCKET_IFNAME=$NCCL_SOCKET_IFNAME")
-
-# Print code provenance for this run.
-if [[ -f "$SCRIPT_DIR/git_summary.txt" ]]; then
-    echo "[INFO] Running from artifact: $SCRIPT_DIR"
-else
-    (cd "$SCRIPT_DIR" && bash "$SCRIPT_DIR/utils/git_summary.sh")
-fi
 
 REPO_MOUNT_OPTIONS=()
 if [[ "$MODE" == "interactive" && ! -d "$SCRIPT_DIR/.git" ]]; then
