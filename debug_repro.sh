@@ -7,6 +7,9 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+source "$SCRIPT_DIR/utils/code_provenance.sh"
+emit_code_provenance "$SCRIPT_DIR"
+
 source "$SCRIPT_DIR/utils/resolve_model_name.sh"
 source "$SCRIPT_DIR/utils/coredump.sh"
 MODEL_NAME=${1:-llama2-70b}
