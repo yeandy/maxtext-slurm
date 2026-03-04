@@ -130,9 +130,25 @@ export NVTE_CK_HOW_V3_BF16_CVT=2
 #export JAX_PGLE_PROFILING_RUNS=5
 
 export IONIC_LOCKFREE=all
-# NOTE: NCCL_DMABUF_ENABLE=1 may SIGSEGV without host kernel metadata;
-#       mount /boot (-v /boot:/boot:ro) or disable this flag!
+
+# DMABUF default: enabled for performance, with runtime safety fallback below.
+# If /boot kernel metadata is unavailable in the container, this file
+# automatically forces NCCL_DMABUF_ENABLE=0 to avoid known SIGSEGV cases.
 export NCCL_DMABUF_ENABLE=1
+# Safety guard for direct sourcing and non-container launch paths.
+if [[ "${NCCL_DMABUF_ENABLE:-}" == "1" ]]; then
+    _kernel_release="$(uname -r 2>/dev/null || true)"
+    _has_boot_kernel_metadata=false
+    if [[ -n "$_kernel_release" && -d /boot ]] && compgen -G "/boot/*${_kernel_release}*" >/dev/null; then
+        _has_boot_kernel_metadata=true
+    fi
+    if [[ "$_has_boot_kernel_metadata" != "true" ]]; then
+        echo "[WARN] NCCL_DMABUF_ENABLE=1 but /boot lacks host kernel metadata for kernel '$_kernel_release'."
+        echo "[WARN] Forcing NCCL_DMABUF_ENABLE=0 (mount /boot read-only to keep DMABUF enabled)."
+        export NCCL_DMABUF_ENABLE=0
+    fi
+fi
+
 export NCCL_GDRCOPY_ENABLE=1
 export NCCL_GDR_FLUSH_DISABLE=1
 export NCCL_IB_ECE_ENABLE=0
