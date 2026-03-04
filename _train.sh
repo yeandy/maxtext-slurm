@@ -71,6 +71,23 @@ if [ ${#EXTRACTED_ENVS[@]} -gt 0 ]; then
     done
 fi
 
+# Safety guard: DMABUF registration can segfault in containers that do not have
+# host kernel metadata under /boot (common in direct K8s container runs).
+# Keep the default enabled, but fail safe to 0 when metadata is unavailable.
+if [[ "${NCCL_DMABUF_ENABLE:-}" == "1" ]]; then
+    _kernel_release="$(uname -r 2>/dev/null || true)"
+    _has_boot_kernel_metadata=false
+    if [[ -n "$_kernel_release" && -d /boot ]] && compgen -G "/boot/*${_kernel_release}*" >/dev/null; then
+        _has_boot_kernel_metadata=true
+    fi
+
+    if [[ "$_has_boot_kernel_metadata" != "true" ]]; then
+        echo "[WARN] NCCL_DMABUF_ENABLE=1 but /boot lacks host kernel metadata for kernel '$_kernel_release'."
+        echo "[WARN] Forcing NCCL_DMABUF_ENABLE=0 to avoid known DMABUF-related SIGSEGV."
+        export NCCL_DMABUF_ENABLE=0
+    fi
+fi
+
 # Handle LD_PRELOAD (after extracting envs so _env_MAXTEXT_LD_PRELOAD works)
 if [ -n "${MAXTEXT_LD_PRELOAD:-}" ]; then
     export LD_PRELOAD="$MAXTEXT_LD_PRELOAD"
