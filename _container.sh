@@ -339,6 +339,11 @@ source "$SCRIPT_DIR/utils/choose_nccl_socket_ifname.sh"
 if nccl_nic=$(choose_nccl_socket_ifname); then
     NCCL_SOCKET_IFNAME="${nccl_nic}"
     echo "NCCL INFO $HOSTNAME: NCCL_SOCKET_IFNAME=$NCCL_SOCKET_IFNAME"
+    if ethtool -i "$NCCL_SOCKET_IFNAME" &>/dev/null; then
+        echo "NIC_DRIVER_CHECK $HOSTNAME iface=$NCCL_SOCKET_IFNAME $(ethtool -i "$NCCL_SOCKET_IFNAME" | awk -F': *' '/^(driver|version|firmware-version):/{printf "%s=%s ", $1, $2}')"
+    else
+        echo "NIC_DRIVER_CHECK $HOSTNAME iface=$NCCL_SOCKET_IFNAME FAILED"
+    fi
 else
     # Handle detection failure based on execution mode
     if [[ "$MODE" == "script" && "$NNODES" -gt 1 ]]; then
