@@ -32,6 +32,14 @@ _cleanup_and_summary() {
 }
 trap _cleanup_and_summary EXIT
 
+# Mirror all subsequent stdout/stderr to the job log so setup/runtime messages
+# are captured consistently (not only training output).
+if [[ -z "${_IN_CONTAINER_LOG_TEE_ACTIVE:-}" ]]; then
+    export _IN_CONTAINER_LOG_TEE_ACTIVE=1
+    exec > >(tee -a "$LOG_FILE")
+    exec 2>&1
+fi
+
 # ============================================================================
 # Container-internal setup (replaces _container.sh's SETUP_CMDS)
 # ============================================================================
@@ -42,8 +50,21 @@ ulimit -Sn "$NOFILE_LIMIT" -Hn "$NOFILE_LIMIT" 2>/dev/null || true
 
 # Core dump setup (best-effort; /coredump may not exist outside the container)
 if [[ -f "$SCRIPT_DIR/utils/coredump.sh" ]]; then
+    # In k8s/direct-container runs, /coredump may not be mounted/writable.
+    # Keep caller-provided COREDUMP_DIR when valid; otherwise choose a fallback.
+    if [[ -z "${COREDUMP_DIR:-}" || ! -d "${COREDUMP_DIR:-}" || ! -w "${COREDUMP_DIR:-}" ]]; then
+        for _dir in /coredump "${JOB_WORKSPACE:-}" /tmp; do
+            [[ -n "$_dir" ]] || continue
+            if [[ -d "$_dir" && -w "$_dir" ]]; then
+                COREDUMP_DIR="$_dir"
+                break
+            fi
+        done
+        export COREDUMP_DIR
+    fi
+
     source "$SCRIPT_DIR/utils/coredump.sh"
-    setup_coredump "/coredump/core.${JOB_ID:+${JOB_ID}.}%t.${NODE_RANK:+${NODE_RANK}.}%h.%e.%p" 2>/dev/null || true
+    setup_coredump "${COREDUMP_DIR:-/tmp}/core.${JOB_ID:+${JOB_ID}.}%t.${NODE_RANK:+${NODE_RANK}.}%h.%e.%p" 2>/dev/null || true
 fi
 
 # Optional pip installs (skip if already present to avoid startup delay)
@@ -86,8 +107,9 @@ else
     MAXTEXT_RUNNER="$SCRIPT_DIR/_train.sh"
 fi
 
-"$MAXTEXT_RUNNER" "$MODEL_NAME" -- "${PASSTHROUGH_ARGS[@]}" 2>&1 | tee -a "$LOG_FILE"
-# Capture training exit code (not tee's) so _print_summary reports correctly
-_RUN_RC=${PIPESTATUS[0]}
+set +e
+"$MAXTEXT_RUNNER" "$MODEL_NAME" -- "${PASSTHROUGH_ARGS[@]}"
+_RUN_RC=$?
+set -e
 
 exit "${_RUN_RC:-1}"

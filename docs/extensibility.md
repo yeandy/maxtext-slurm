@@ -33,6 +33,8 @@ Each layer communicates with its neighbors through environment variables and cal
 1. Write a new orchestration entry point (e.g., `submit_k8s.sh` + a Job/JobSet manifest) that sets the same generic env vars (`JOB_ID`, `NNODES`, `NODE_RANK`, `JAX_COORDINATOR_IP`, `NODELIST_EXPANDED`). For observability, also set `RAY=1`. See the env var contract documented at the top of `_container.sh`.
 2. Call `_container.sh` with the same positional args (`$JAX_PORT $MODEL_NAME $EXP_TAG $MODEL_NAME_ALIAS -- $PASSTHROUGH_ARGS`). Everything from `_container.sh` downward runs unmodified — it derives `MODE`, maps `RAY` → `USE_RAY`, handles Docker launch, and conditionally passes the right env vars to the training container.
 
+For Kubernetes user guidance, see [Kubernetes direct-container runs](k8s-direct-container.md).
+
 **Effort:** New files only. No changes to existing layers. See [Architecture: Orchestrator Extensibility](architecture.md#orchestrator-extensibility) for the tier table.
 
 ## Axis 2: execution environment (container → native)
@@ -44,7 +46,7 @@ Each layer communicates with its neighbors through environment variables and cal
 `in_container_run.sh` is the starting point — it already bypasses the Docker/Podman launch. Adapting it for a bare-metal host requires:
 
 1. Guard the container-specific setup (coredump paths, pip installs) behind a container-presence check, or extract it into a separate step.
-2. Parameterize the `/outputs` base path in `_train.sh` (currently a Docker mount alias) — the single downstream touch point. (`in_container_run.sh` already handles this: `JOB_WORKSPACE` auto-detects `/outputs` vs `$SCRIPT_DIR/outputs`.)
+2. Set `JOB_WORKSPACE` (or `OUTPUTS_BASE_DIR`) explicitly when you need a custom output root. Output paths resolve via `utils/job_dir.sh`, while default direct in-container runs use `outputs/` next to the scripts.
 3. Add a container-presence guard (~5 one-line checks) to `release_gpu.sh` and `preflight.sh` so they skip container operations when running natively.
 4. **Observability prerequisites** — In the container-based flow, [Ray](https://www.ray.io/) is `pip install`'d and [Prometheus](https://prometheus.io/) is downloaded automatically at startup (`ray_cluster.sh`, `prometheus.sh`). For native execution, these must be pre-installed on every node (or the install functions reused outside the container). The rest of the observability pipeline (metrics exporter, plugins, TSDB persistence) works as-is.
 

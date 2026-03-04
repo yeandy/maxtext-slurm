@@ -95,7 +95,7 @@ run_local.sh 70b -- steps=10
 
 ## Inside-container runs (`in_container_run.sh`)
 
-Run training from inside the container — when you're already in an interactive shell, a `docker exec` session, a Kubernetes pod, or any pre-built environment with the training image:
+Run training from inside the container — when you're already in an interactive shell, a `docker exec` session, a [Kubernetes](https://kubernetes.io/) pod, or any pre-built environment with the training image:
 
 ```bash
 in_container_run.sh 70b -- steps=10
@@ -104,6 +104,8 @@ RAY=1 in_container_run.sh 70b -- steps=10
 ```
 
 The interface is identical to `run_local.sh` (same model spec format, same `--` separator, same `_env_` overrides), but it skips the container launch — it runs `_train.sh` directly.
+
+For Kubernetes direct-container usage (recommended env vars, multinode mapping, and coredump caveats), see [Kubernetes direct-container runs](k8s-direct-container.md).
 
 A common workflow is to enter the container interactively, then iterate:
 
@@ -116,7 +118,7 @@ in_container_run.sh 70b -- steps=5                     # quick test
 in_container_run.sh 70b -- steps=5 remat_policy=full   # try a different config
 ```
 
-Environment variables (`JAX_COORDINATOR_IP`, `NNODES`, etc.) default to single-node local values but can be overridden for multi-node setups. `JOB_WORKSPACE` defaults to `/outputs` inside the container or `outputs/` for native runs. `container_env.sh` overrides (e.g. `MAXTEXT_REPO_DIR=…`, `MAXTEXT_PATCH_BRANCH=…`) also work — `DOCKER_IMAGE` and other container-launch settings are ignored since the container is already running.
+Environment variables (`JAX_COORDINATOR_IP`, `NNODES`, etc.) default to single-node local values but can be overridden for multi-node setups. For direct in-container runs, `JOB_WORKSPACE` defaults to `outputs/` next to the scripts unless explicitly set. `container_env.sh` overrides (e.g. `MAXTEXT_REPO_DIR=…`, `MAXTEXT_PATCH_BRANCH=…`) also work — `DOCKER_IMAGE` and other container-launch settings are ignored since the container is already running.
 
 ## Checkpointing
 

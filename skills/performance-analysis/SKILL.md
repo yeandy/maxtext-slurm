@@ -14,15 +14,15 @@ Post-training (or mid-training) analysis pipeline. Follow the workflow below fro
 ### Step 1: Run the dispatcher
 
 ```bash
-python3 utils/analyze_job.py /outputs/<job>.log
-python3 utils/analyze_job.py /outputs/<job_dir>/
-python3 utils/analyze_job.py /outputs/local_2026*
+python3 utils/analyze_job.py "$JOB_WORKSPACE/<job>.log"
+python3 utils/analyze_job.py "$JOB_WORKSPACE/<job_dir>/"
+python3 utils/analyze_job.py "$JOB_WORKSPACE/local_2026*"
 ```
 
 For running jobs, pass `-f` to force re-analysis (bypasses staleness check):
 
 ```bash
-python3 utils/analyze_job.py -f /outputs/<job>.log
+python3 utils/analyze_job.py -f "$JOB_WORKSPACE/<job>.log"
 ```
 
 The dispatcher auto-detects available artifacts and runs only the relevant tools:
@@ -43,7 +43,7 @@ If the dispatcher output says **"TraceLens not installed"** and xplane traces ex
    print('TraceLens: installed and patched')
    "
    ```
-   - **Succeeds** → TraceLens is ready. Just re-run: `python3 utils/analyze_job.py -f /outputs/<job>.log`
+   - **Succeeds** → TraceLens is ready. Just re-run: `python3 utils/analyze_job.py -f "$JOB_WORKSPACE/<job>.log"`
    - **ImportError** → not installed. Install then patch (see below).
    - **AssertionError** → installed but unpatched. Patch only (see below).
 
@@ -60,7 +60,7 @@ If the dispatcher output says **"TraceLens not installed"** and xplane traces ex
 
 4. **Re-run** the dispatcher with `-f`:
    ```bash
-   python3 utils/analyze_job.py -f /outputs/<job>.log
+   python3 utils/analyze_job.py -f "$JOB_WORKSPACE/<job>.log"
    ```
 
 This is one-time per environment. Always check before patching to avoid redundant work.
@@ -130,7 +130,7 @@ The server auto-detects a free port starting from 8080 and auto-reloads `analysi
 ### Job output layout
 
 ```
-/outputs/<JOB_ID>-<JOB_NAME>[-TGS_<VALUE>]/
+<JOB_WORKSPACE>/<JOB_ID>-<JOB_NAME>[-TGS_<VALUE>]/
   log -> ../<log_file>                          # symlink to log file
   analysis.json                                 # structured metrics
   xla_dump/                                     # if _env_ENABLE_XLA_DUMP=1
@@ -140,7 +140,7 @@ The server auto-detects a free port starting from 8080 and auto-reloads `analysi
   tracelens/<ts>/csvs/*.csv                     # created by TraceLens
 ```
 
-The `.log` file sits alongside the directory in `/outputs/`.
+The `.log` file sits alongside the directory in `<JOB_WORKSPACE>/`.
 
 When `enable_checkpointing=true`, profiler traces may end up in a shared directory outside the job dir. `analyze_job.py` parses `Config param tensorboard_dir` from the log to locate these. The dispatcher and `perf_server.py` filter profiles by job execution time window and node-0 hostname to disambiguate.
 

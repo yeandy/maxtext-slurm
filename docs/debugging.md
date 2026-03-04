@@ -16,10 +16,11 @@ To add a cluster-specific coredump directory, either edit `COREDUMP_EXTRA_DIRS` 
 COREDUMP_EXTRA_DIRS="/fast-ssd/coredumps,/shared/coredumps" ./submit.sh 70b -N 8
 ```
 
-Core dumps are enabled automatically — no manual setup required. Notes:
+Core dumps are configured automatically. Notes:
 
 - The path selection is made independently on each node.
 - If the path points to local disk, SSH into the corresponding compute node to access the core files.
+- In direct in-container runs (including Kubernetes), coredump setup is best-effort when kernel policy prevents changing `core_pattern`.
 
 ### Waiting for writes
 
@@ -39,8 +40,8 @@ Core dump files must be inspected **inside the same [Docker](https://www.docker.
 run_local.sh
 
 # Step 1: Find the core dump from the crashed job.
-# Core files from script-mode jobs are inside per-job subdirectories under /outputs.
-ls -lt /outputs/*/core*py* 2>/dev/null
+# Core files from script-mode jobs are inside per-job subdirectories under $JOB_WORKSPACE.
+ls -lt "${JOB_WORKSPACE:-outputs}"/*/core*py* 2>/dev/null
 
 # Step 2: Use gdb to inspect it.
 gdb python3 "<path from step 1>"

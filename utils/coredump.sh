@@ -30,10 +30,44 @@ _file_size() {
 # ---------------------------------------------------------------------------
 setup_coredump() {
     if [[ -d "${COREDUMP_DIR:-}" ]]; then
+        echo "[coredump] setup_mode=best_effort"
         local pattern="${1:-${COREDUMP_DIR}/core.%t.%h.%e.%p}"
-        echo "$pattern" | sudo tee /proc/sys/kernel/core_pattern
+        local pattern_apply_status="not-attempted"
+        if [[ -w /proc/sys/kernel/core_pattern ]]; then
+            if echo "$pattern" > /proc/sys/kernel/core_pattern 2>/dev/null; then
+                pattern_apply_status="direct-write-ok"
+            else
+                pattern_apply_status="direct-write-failed"
+            fi
+        elif command -v sudo >/dev/null 2>&1; then
+            if echo "$pattern" | sudo tee /proc/sys/kernel/core_pattern >/dev/null 2>&1; then
+                pattern_apply_status="sudo-write-ok"
+            else
+                pattern_apply_status="sudo-write-failed"
+            fi
+        else
+            pattern_apply_status="no-privilege"
+            echo "[coredump] WARN: Cannot update /proc/sys/kernel/core_pattern (missing privileges)"
+        fi
         ulimit -c unlimited
-        echo "[coredump] core_pattern=$(cat /proc/sys/kernel/core_pattern)"
+        local active_pattern
+        active_pattern="$(cat /proc/sys/kernel/core_pattern 2>/dev/null || echo "unknown")"
+        echo "[coredump] requested_core_pattern=$pattern"
+        echo "[coredump] core_pattern=$active_pattern"
+        echo "[coredump] core_pattern_apply_status=$pattern_apply_status"
+
+        local active_norm="$active_pattern"
+        active_norm="${active_norm#\"}"
+        active_norm="${active_norm%\"}"
+        local requested_norm="$pattern"
+        requested_norm="${requested_norm#\"}"
+        requested_norm="${requested_norm%\"}"
+        if [[ "$active_norm" != "$requested_norm" ]]; then
+            echo "[coredump] WARN: Requested core_pattern did not take effect; continuing in best-effort mode (host/pod policy likely controls coredump destination)"
+        fi
+        if [[ "$active_pattern" == \|* ]]; then
+            echo "[coredump] WARN: core_pattern is pipe-based; file coredumps in $COREDUMP_DIR may be handled by host tooling"
+        fi
     else
         echo "[coredump] No COREDUMP_DIR — core dumps disabled"
     fi

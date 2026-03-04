@@ -67,7 +67,7 @@ Dump files are written to `<OUTPUT_PATH>/xla_dump/`. Key files:
 Open trace files in [Perfetto](https://ui.perfetto.dev/) (recommended for large files) or `chrome://tracing`. Multi-node jobs produce one trace file per node. Each can be viewed individually, or merged into one file for side-by-side viewing:
 
 ```bash
-utils/merge_xplane_traces.py /outputs/<job>/
+utils/merge_xplane_traces.py "$JOB_WORKSPACE/<job>/"
 utils/merge_xplane_traces.py node0.trace.json.gz node1.trace.json.gz -o combined.trace.json.gz
 ```
 
