@@ -64,12 +64,9 @@ source "$SCRIPT_DIR/utils/detect_ip.sh"
 export LOGIN_NODE_HOSTNAME="${LOGIN_NODE_HOSTNAME:-${USER}@$(hostname -f 2>/dev/null || hostname)}"
 export LOGIN_NODE_IP="${LOGIN_NODE_IP:-${USER}@$(detect_ip)}"
 
-# /outputs is the standard container mount; fall back to outputs/ for host runs
-if [[ -d /outputs ]]; then
-    _JOB_WORKSPACE_DEFAULT=/outputs
-else
-    _JOB_WORKSPACE_DEFAULT="$SCRIPT_DIR/outputs"
-fi
+# Default to outputs/ next to the scripts unless explicitly overridden.
+# This keeps direct in-container runs independent of the /outputs mount alias.
+_JOB_WORKSPACE_DEFAULT="$SCRIPT_DIR/outputs"
 export JOB_WORKSPACE="${JOB_WORKSPACE:-$_JOB_WORKSPACE_DEFAULT}"
 
 source "$SCRIPT_DIR/utils/job_dir.sh"

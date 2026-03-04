@@ -50,7 +50,7 @@ if [[ "${ENABLE_XLA_DUMP,,}" =~ ^(1|y|yes|true)$ ]]; then
     XLA_FLAGS="${XLA_FLAGS:+$XLA_FLAGS }--xla_dump_hlo_as_text"
     XLA_FLAGS="$XLA_FLAGS --xla_dump_hlo_module_re=^jit_train_step$"
     XLA_FLAGS="$XLA_FLAGS --xla_dump_hlo_pipeline_re='(?i)gpu'"
-    XLA_FLAGS="$XLA_FLAGS --xla_dump_to=/outputs/${JOB_DIR}/xla_dump"
+    XLA_FLAGS="$XLA_FLAGS --xla_dump_to=${OUTPUT_PATH}/xla_dump"
     export XLA_FLAGS
     echo "[XLA dump] XLA_FLAGS=$XLA_FLAGS"
 fi

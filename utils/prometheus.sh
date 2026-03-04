@@ -16,6 +16,7 @@ RAY_METRICS_PORT=${RAY_METRICS_PORT:-55080}
 EXPORTER_PORT=${EXPORTER_PORT:-9400}
 
 _PROM_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$_PROM_SCRIPT_DIR/utils/job_dir.sh"
 
 # ============================================================================
 # Core functions (used both when sourced and when called directly)
@@ -91,7 +92,7 @@ scrape_configs:
       - targets: [${hw_targets}]
 EOF
 
-    PROMETHEUS_DATA_DIR="/outputs/${JOB_DIR:-unknown}/prometheus"
+    PROMETHEUS_DATA_DIR="$(resolve_outputs_base_dir)/${JOB_DIR:-unknown}/prometheus"
     mkdir -p "$PROMETHEUS_DATA_DIR"
     local prom_log="$PROMETHEUS_DATA_DIR/prometheus.log"
 

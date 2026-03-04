@@ -23,6 +23,20 @@ is_checkpointing_enabled() {
     [[ "$job_dir" =~ enable_checkpointing_(true|1|yes)(-|$) ]]
 }
 
+# Resolve the runtime base directory for outputs/checkpoints.
+# Priority:
+#   1) OUTPUTS_BASE_DIR (explicit override)
+#   2) JOB_WORKSPACE (set by run_setup.sh; e.g., in_container_run.sh)
+#   3) /outputs (container default mount path)
+resolve_outputs_base_dir() {
+    local base="${OUTPUTS_BASE_DIR:-${JOB_WORKSPACE:-/outputs}}"
+    # Normalize trailing slash (except root).
+    if [[ "$base" != "/" ]]; then
+        base="${base%/}"
+    fi
+    echo "$base"
+}
+
 # Resolve the base output directory for a training run.
 # Checkpointing → model-based path (persists across restarts).
 # Non-checkpointing → job-based path (unique per run).
@@ -30,9 +44,11 @@ resolve_output_path() {
     local job_dir="$1"
     local model_name="$2"
     local model_alias="${3:-}"
+    local outputs_base
+    outputs_base="$(resolve_outputs_base_dir)"
     if is_checkpointing_enabled "$job_dir"; then
-        echo "/outputs/${model_alias:-$model_name}"
+        echo "${outputs_base}/${model_alias:-$model_name}"
     else
-        echo "/outputs/${job_dir}"
+        echo "${outputs_base}/${job_dir}"
     fi
 }

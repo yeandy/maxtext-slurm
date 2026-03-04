@@ -2,6 +2,7 @@
 # Ray cluster management utilities
 
 _RAY_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$_RAY_SCRIPT_DIR/utils/job_dir.sh"
 
 export RAY_LOG_TO_STDERR=0
 export RAY_BACKEND_LOG_LEVEL=fatal
@@ -24,12 +25,12 @@ RAY_METRICS_PORT=55080
 PROMETHEUS_PORT=9190
 
 # Persist Ray logs to the shared job output directory so they survive crashes.
-# Inside Docker, /outputs is mounted from $JOB_WORKSPACE
-# (or $SCRIPT_DIR/outputs) on the host.
+# Inside Docker, this is usually /outputs; in direct-in-container runs it may
+# be another base (e.g. JOB_WORKSPACE).
 # NOTE: We do NOT use --temp-dir for persistence because long paths exceed the
 # 108-char Unix socket limit (sockaddr_un).  Instead, Ray uses the default
 # /tmp/ray temp dir and we symlink its log directory to persistent storage.
-RAY_LOG_DIR="/outputs/${JOB_DIR:-unknown}/ray_logs/$(hostname -s 2>/dev/null || hostname)"
+RAY_LOG_DIR="$(resolve_outputs_base_dir)/${JOB_DIR:-unknown}/ray_logs/$(hostname -s 2>/dev/null || hostname)"
 
 # After ray start, redirect its log directory to persistent storage via symlink.
 _persist_ray_logs() {
@@ -96,7 +97,7 @@ _METRICS_EXPORTER_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/metrics_exporter.sh"
 
 start_metrics_exporter() {
     if [[ -x "$_METRICS_EXPORTER_SCRIPT" ]]; then
-        local log_dir="/outputs/${JOB_DIR:-unknown}/metrics_exporter"
+        local log_dir="$(resolve_outputs_base_dir)/${JOB_DIR:-unknown}/metrics_exporter"
         local log_file="$log_dir/$(hostname -s).log"
         mkdir -p "$log_dir" 2>/dev/null || log_file="/tmp/metrics_exporter.log"
         _run_with_watchdog "Metrics Exporter" "$log_file" -- \
