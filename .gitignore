@@ -11,6 +11,7 @@ outputs/
 .host-cmd/results/
 .host-cmd/daemon.pid
 .host-cmd/daemon.lock
+.host-cmd/policy.json
 .host-cmd/*.log.*
 .host-cmd/__pycache__/
 

@@ -33,6 +33,7 @@ RESULTS_DIR = HOST_CMD_DIR / "results"
 PID_FILE = HOST_CMD_DIR / "daemon.pid"
 LOCK_FILE = HOST_CMD_DIR / "daemon.lock"
 POLICY_FILE = HOST_CMD_DIR / "policy.json"
+POLICY_DEFAULT = HOST_CMD_DIR / "policy.json.default"
 
 LOG_FMT = "%(asctime)s [%(levelname)s] %(message)s"
 LOG_FILE = HOST_CMD_DIR / "host_cmd_server.log"
@@ -74,10 +75,11 @@ _policy: dict = {}
 def load_policy():
     """Load policy once into _policy. Called at server startup only."""
     global _policy
-    if POLICY_FILE.exists():
+    path = POLICY_FILE if POLICY_FILE.exists() else POLICY_DEFAULT
+    if path.exists():
         try:
-            _policy = json.loads(POLICY_FILE.read_text())
-            _log.info("Loaded policy from %s", POLICY_FILE)
+            _policy = json.loads(path.read_text())
+            _log.info("Loaded policy from %s", path)
             deny = _policy.get("deny_patterns", [])
             allow = _policy.get("allow_patterns", [])
             max_len = _policy.get("max_command_length", "unlimited")
@@ -91,7 +93,7 @@ def load_policy():
                 _log.info("    + %s", p)
             return
         except (json.JSONDecodeError, OSError) as exc:
-            _log.warning("Failed to load %s: %s", POLICY_FILE, exc)
+            _log.warning("Failed to load %s: %s", path, exc)
     _policy = {}
     _log.warning("No policy file found — all commands allowed")
 
