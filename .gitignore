@@ -6,6 +6,14 @@ outputs/
 
 .claude/
 
+.host-cmd/queue/
+.host-cmd/running/
+.host-cmd/results/
+.host-cmd/daemon.pid
+.host-cmd/daemon.lock
+.host-cmd/*.log.*
+.host-cmd/__pycache__/
+
 *.trace.json*
 
 .nfs*
