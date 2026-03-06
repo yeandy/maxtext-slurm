@@ -10,6 +10,7 @@ Structured instructions for AI agents. Each skill encodes the methodology from v
 | [job-log-triage](job-log-triage/SKILL.md) | "triage", "diagnose", "why did job fail", "is the job hanging", crash/hang/timeout/OOM/NCCL errors, job status |
 | [tsdb-diagnosis](tsdb-diagnosis/SKILL.md) | "diagnose with TSDB", "check GPU health", "check network", "query prometheus", "metrics", incident root cause analysis |
 | [coredump-debug](coredump-debug/SKILL.md) | "coredump", "core file", "SIGSEGV", "segfault", "crash dump", GDB backtrace analysis, crash root cause |
+| [model-config-guide](model-config-guide/SKILL.md) | "add model", "create config", "model config", ".gpu.yml", parallelism, batch size, quantization, OOM tuning |
 
 ## How agents discover skills
 
