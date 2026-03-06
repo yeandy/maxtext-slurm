@@ -195,9 +195,10 @@ class HostBridge:
     # ------------------------------------------------------------------
 
     def _load_policy(self) -> dict:
-        pf = self.dir / "policy.json"
-        if pf.exists():
-            return json.loads(pf.read_text())
+        for name in ("policy.json", "policy.json.default"):
+            pf = self.dir / name
+            if pf.exists():
+                return json.loads(pf.read_text())
         return {"deny_patterns": [], "allow_patterns": [], "max_command_length": 8192}
 
     def _save_policy(self, policy: dict):
