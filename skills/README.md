@@ -9,6 +9,7 @@ Structured instructions for AI agents. Each skill encodes the methodology from v
 | [performance-analysis](performance-analysis/SKILL.md) | "analyze job", "TGS", "TraceLens", "IRLens", profiling tasks |
 | [job-log-triage](job-log-triage/SKILL.md) | "triage", "diagnose", "why did job fail", "is the job hanging", crash/hang/timeout/OOM/NCCL errors, job status |
 | [tsdb-diagnosis](tsdb-diagnosis/SKILL.md) | "diagnose with TSDB", "check GPU health", "check network", "query prometheus", "metrics", incident root cause analysis |
+| [coredump-debug](coredump-debug/SKILL.md) | "coredump", "core file", "SIGSEGV", "segfault", "crash dump", GDB backtrace analysis, crash root cause |
 
 ## How agents discover skills
 
