@@ -106,10 +106,19 @@ Start from a known-working config for a similar-sized model and adjust. These ar
 | 300B+ MoE | 10–22 | 4096–8192 |
 | 400B+ dense | 3–5 | 8192 |
 
-If OOM, reduce `per_device_batch_size` first, then `max_target_length`. If the model barely fits at batch size 1, increase `XLA_PYTHON_CLIENT_MEM_FRACTION` (default `.85` in `train_env.sh`) — this controls what fraction of GPU memory JAX pre-allocates. Setting it higher (e.g., `.90`, `.95`) gives more room for model weights and activations, but too high risks RCCL allocation failures. Pass it per-run via:
+If OOM, reduce `per_device_batch_size` first, then `max_target_length`. If the model barely fits at batch size 1, increase `XLA_PYTHON_CLIENT_MEM_FRACTION` (default `.85` in `train_env.sh`) — this controls what fraction of GPU memory JAX pre-allocates. Setting it higher (e.g., `.90`, `.93`) gives more room for model weights and activations, but too high risks RCCL allocation failures. Note: XLA may inflate allocations when more memory is available, so increasing the fraction doesn't always yield proportional headroom.
+
+For per-run testing, pass it via CLI:
 
 ```bash
 submit.sh 70b -N 1 -- _env_XLA_PYTHON_CLIENT_MEM_FRACTION=.90
+```
+
+For permanent per-model overrides, create a `configs/<model>.env.sh` file (sourced after `train_env.sh`, before CLI `_env_` overrides):
+
+```bash
+# configs/my-large-model.env.sh
+export XLA_PYTHON_CLIENT_MEM_FRACTION=.93
 ```
 
 ### Step 5: Set dtypes and quantization

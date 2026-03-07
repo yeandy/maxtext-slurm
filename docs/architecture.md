@@ -25,7 +25,7 @@ _job.sbatch                         │                         │
                          │             ray_cluster.sh + prometheus.sh (Ray Dashboard + Prometheus + TensorBoard)
                          │                       │
                          ▼                       ▼
-            _train.sh (shared entry point; sources train_env.sh)
+            _train.sh (shared entry point; sources train_env.sh + per-model env)
                          │                       │
                          ▼                       ▼
                   mfu_tracker.py       _ray_actor.py

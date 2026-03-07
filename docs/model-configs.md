@@ -88,6 +88,29 @@ submit.sh ds-proxy-e128 -N 4    # matches ds-proxy-e128-h2048.gpu.yml
 
 If the name is ambiguous (matches multiple files), the command fails with a list of candidates. If no file matches, it lists all supported models. Because resolution is purely file-driven, a model that doesn't have a `.gpu.yml` in `configs/` simply doesn't exist to the launcher — create one to add support (see [Adding a new config](#adding-a-new-config) above).
 
+## Per-model environment overrides
+
+Some models need environment variables that differ from the global `train_env.sh` defaults — for example, a larger `XLA_PYTHON_CLIENT_MEM_FRACTION` to fit a bigger batch size. Instead of passing `_env_` overrides on every submit, create a per-model env file:
+
+```
+configs/<model-name>.env.sh
+```
+
+If present, it is sourced after `train_env.sh` but before CLI `_env_` overrides:
+
+```
+train_env.sh  →  configs/<model>.env.sh (if exists)  →  _env_ CLI overrides
+```
+
+Example (`configs/my-large-model.env.sh`):
+
+```bash
+# This model needs a larger memory pool to fit the target batch size.
+export XLA_PYTHON_CLIENT_MEM_FRACTION=.93
+```
+
+Per-model env files are optional — models without one use the global `train_env.sh` defaults. CLI `_env_` overrides always take precedence, so per-job tuning still works.
+
 ## CLI overrides
 
 Any `base.yml` setting can be overridden per-run via passthrough args after `--`. These override both `base.yml` defaults and the `.gpu.yml` config:

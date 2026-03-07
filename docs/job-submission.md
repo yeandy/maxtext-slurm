@@ -177,6 +177,7 @@ Training behavior is controlled by two config files and an optional per-run over
 | `container_env.sh` | Docker image, registry, host mount paths, optional hotfix/debug branch. All variables are CLI-overridable (e.g. `DOCKER_IMAGE=… ./submit.sh …`) | Yes |
 | `container_env.local.sh` | Registry credentials (gitignored) | Yes (private images only) |
 | `train_env.sh` | Runtime env vars (XLA, NCCL, ROCm, ...) | Yes |
+| `configs/<model>.env.sh` | Per-model env overrides (sourced after `train_env.sh`) | Yes (optional) |
 | `_env_` prefix | Per-run overrides | Via CLI |
 
 ### `container_env.sh` (Docker image and paths)
@@ -256,9 +257,23 @@ Sourced by `_train.sh` before every training launch. Any `export` in this file a
 | Transformer Engine | `NVTE_FUSED_ATTN`, `NVTE_FUSED_ATTN_CK`, `NVTE_USE_ROCM` |
 | Composable Kernel | `CK_TILE_FLOAT_TO_BFLOAT16_DEFAULT`, `NVTE_CK_*` |
 
+### Per-model environment overrides (`configs/<model>.env.sh`)
+
+If a file `configs/<model-name>.env.sh` exists, `_train.sh` sources it after `train_env.sh`. This lets individual models override global defaults without affecting other models or requiring CLI overrides on every submit.
+
+The full override order is:
+
+```
+train_env.sh (global)  →  configs/<model>.env.sh (per-model)  →  _env_ CLI (per-run)
+```
+
+Each layer overrides the previous. For example, `train_env.sh` sets `XLA_PYTHON_CLIENT_MEM_FRACTION=.85`, a per-model env file can raise it to `.93` for a memory-hungry model, and a CLI `_env_` override can adjust it further for a one-off experiment.
+
+Per-model env files are optional — models without one use the global `train_env.sh` defaults. See [Model Configs: Per-model environment overrides](model-configs.md#per-model-environment-overrides) for details.
+
 ### Per-run overrides (`_env_`)
 
-Any argument after `--` that starts with `_env_` is treated as an environment variable override. The prefix is stripped and the remainder is exported **after** `train_env.sh` is sourced, so overrides always take precedence:
+Any argument after `--` that starts with `_env_` is treated as an environment variable override. The prefix is stripped and the remainder is exported **after** `train_env.sh` and per-model env are sourced, so overrides always take precedence:
 
 ```bash
 submit.sh            70b -N 2 -- _env_NCCL_DEBUG=INFO           # exports NCCL_DEBUG=INFO
