@@ -80,6 +80,11 @@ export NCCL_IB_QPS_PER_CONNECTION=4
 #export NCCL_IB_RETRY_CNT=7
 #export NCCL_IB_TIMEOUT=23
 
+# ---- Auto-detected NCCL network settings (IB HCA, QoS, socket interface) ----
+_TRAIN_ENV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_TRAIN_ENV_DIR/utils/detect_nccl_env.sh"
+unset _TRAIN_ENV_DIR
+
 # ---- Protocol and algorithm selection ----
 #export NCCL_ALGO=Ring,Tree  # Hybrid algorithm selection
 #export NCCL_PROTO=Simple  # Better for large messages in MoE
@@ -152,8 +157,7 @@ fi
 export NCCL_GDRCOPY_ENABLE=1
 export NCCL_GDR_FLUSH_DISABLE=1
 export NCCL_IB_ECE_ENABLE=0
-# NOTE: NCCL_IB_TC and NCCL_IB_FIFO_TC: auto-detected on the host by _container.sh
-# and passed into the container via --env (see utils/detect_ainic_nccl_ib_tc.sh).
+# NOTE: NCCL_IB_TC and NCCL_IB_FIFO_TC are auto-detected above (see utils/detect_nccl_env.sh).
 export NCCL_IB_GID_INDEX=1
 export NCCL_IB_PCI_RELAXED_ORDERING=1
 export NCCL_IB_USE_INLINE=1

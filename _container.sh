@@ -179,6 +179,9 @@ case "$MODE" in
             echo '$DOCKER_SCRIPT_DIR/debug_repro.sh' >> ~/.bash_history
             echo 'gdb python3 \"\$(ls -t \$COREDUMP_DIR/core*py* | head -n1)\"' >> ~/.bash_history
 
+            # Auto-detect NCCL network env vars so ad-hoc commands inherit them.
+            source $DOCKER_SCRIPT_DIR/utils/detect_nccl_env.sh || true
+
             echo 'Setup done. Entering interactive shell...'
             exec bash"
         ;;
@@ -312,58 +315,11 @@ else
     fi
 fi
 
-# InfiniBand device passthrough and HCA detection (safe if IB is absent)
+# InfiniBand device passthrough (safe if IB is absent)
 IB_DEVICE_OPTIONS=()
-NCCL_IB_HCA=""
-if [[ -d /sys/class/infiniband ]]; then
-    NCCL_IB_HCA=$(ls /sys/class/infiniband 2>/dev/null | tr '\n' ',' | sed 's/,$//')
-fi
 if [[ -e /dev/infiniband ]]; then
     IB_DEVICE_OPTIONS=(--device /dev/infiniband)
 fi
-# Pensando AINIC QoS auto-detection (NCCL_IB_TC, NCCL_IB_FIFO_TC)
-source "$SCRIPT_DIR/utils/detect_ainic_nccl_ib_tc.sh"
-NCCL_IB_TC=""
-NCCL_IB_FIFO_TC=""
-if is_pensando; then
-    _tc=$(detect_pensando_tc)
-    NCCL_IB_TC=$(echo "$_tc" | awk '{print $1}')
-    NCCL_IB_FIFO_TC=$(echo "$_tc" | awk '{print $2}')
-    echo "[INFO] $HOSTNAME: Pensando AINIC detected: NCCL_IB_TC=$NCCL_IB_TC NCCL_IB_FIFO_TC=$NCCL_IB_FIFO_TC"
-    unset _tc
-else
-    echo "[INFO] $HOSTNAME: Not a Pensando AINIC cluster, no NCCL_IB_TC/NCCL_IB_FIFO_TC override needed"
-fi
-
-source "$SCRIPT_DIR/utils/choose_nccl_socket_ifname.sh"
-if nccl_nic=$(choose_nccl_socket_ifname); then
-    NCCL_SOCKET_IFNAME="${nccl_nic}"
-    echo "NCCL INFO $HOSTNAME: NCCL_SOCKET_IFNAME=$NCCL_SOCKET_IFNAME"
-    if ethtool -i "$NCCL_SOCKET_IFNAME" &>/dev/null; then
-        echo "NIC_DRIVER_CHECK $HOSTNAME iface=$NCCL_SOCKET_IFNAME $(ethtool -i "$NCCL_SOCKET_IFNAME" | awk -F': *' '/^(driver|version|firmware-version):/{printf "%s=%s ", $1, $2}')"
-    else
-        echo "NIC_DRIVER_CHECK $HOSTNAME iface=$NCCL_SOCKET_IFNAME FAILED"
-    fi
-else
-    # Handle detection failure based on execution mode
-    if [[ "$MODE" == "script" && "$NNODES" -gt 1 ]]; then
-        # Multi-node script mode: fail fast (cross-node NCCL needs a socket interface)
-        echo "NCCL FATAL $HOSTNAME: Failed to auto-detect NCCL_SOCKET_IFNAME; ABORTING..." >&2
-        exit 1
-    else
-        # Single-node or interactive mode: warn and continue
-        echo "NCCL WARN $HOSTNAME: Could not auto-detect NCCL_SOCKET_IFNAME; leaving it unset" >&2
-    fi
-fi
-
-# Only pass NCCL network vars to the container when they have a value;
-# an empty --env KEY= would override NCCL's internal auto-detection.
-NCCL_ENV_ARGS=()
-[[ -n "$NCCL_IB_HCA" ]] && NCCL_ENV_ARGS+=(--env "NCCL_IB_HCA=$NCCL_IB_HCA")
-[[ -n "$NCCL_IB_TC" ]] && NCCL_ENV_ARGS+=(--env "NCCL_IB_TC=$NCCL_IB_TC")
-[[ -n "$NCCL_IB_FIFO_TC" ]] && NCCL_ENV_ARGS+=(--env "NCCL_IB_FIFO_TC=$NCCL_IB_FIFO_TC")
-[[ -n "${NCCL_SOCKET_IFNAME:-}" ]] && NCCL_ENV_ARGS+=(--env "NCCL_SOCKET_IFNAME=$NCCL_SOCKET_IFNAME")
-
 REPO_MOUNT_OPTIONS=()
 if [[ "$MODE" == "interactive" && ! -d "$SCRIPT_DIR/.git" ]]; then
     # SCRIPT_DIR is a subdirectory of a larger repo — mount the parent for browsing.
@@ -448,7 +404,6 @@ DOCKER_RUN_ARGS=(
     "${IB_DEVICE_OPTIONS[@]}"
     "${TRAIN_ENV_ARGS[@]}"
     "${RAY_ENV_ARGS[@]}"
-    "${NCCL_ENV_ARGS[@]}"
     --env "NNODES=$NNODES"
     --env "NODE_RANK=$NODE_RANK"
     --env "JOB_ID=$JOB_ID"
