@@ -56,7 +56,7 @@ enable_goodput_recording: False
 monitor_goodput: False
 
 # ── Parallelism ──────────────────────────────────────────────────────────────
-dcn_data_parallelism: 4
+dcn_data_parallelism: -1
 dcn_fsdp_parallelism: 1
 dcn_sequence_parallelism: 1 # never recommended
 dcn_context_parallelism: 1
