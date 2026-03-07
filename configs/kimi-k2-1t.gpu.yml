@@ -1,0 +1,62 @@
+# ── Run Config ───────────────────────────────────────────────────────────────
+base_config: "base.yml"
+run_name: "kimi-k2-1t_train_test"
+hardware: "gpu"
+model_name: "kimi-k2-1t"
+
+# ── Training ─────────────────────────────────────────────────────────────────
+steps: 15
+
+# ── Parallelism ──────────────────────────────────────────────────────────────
+# At most one DCN axis can be unspecified (-1)
+dcn_data_parallelism: -1 # auto-sharded
+dcn_fsdp_parallelism: 8
+dcn_sequence_parallelism: 1 # never recommended
+dcn_context_parallelism: 1
+dcn_tensor_parallelism: 1 # never recommended
+dcn_pipeline_parallelism: 1
+dcn_expert_parallelism: 1
+# At most one ICI axis can be unspecified (-1)
+ici_data_parallelism: 1
+ici_fsdp_parallelism: 1
+ici_sequence_parallelism: 1
+ici_context_parallelism: 1
+ici_tensor_parallelism: 1
+ici_pipeline_parallelism: 1
+ici_expert_parallelism: 8
+
+# ── Batch & Sequence ─────────────────────────────────────────────────────────
+per_device_batch_size: 12
+max_target_length: 4096
+packing: true
+max_segments_per_seq: 32
+
+# ── Attention & Compute ──────────────────────────────────────────────────────
+attention: "cudnn_flash_te"
+remat_policy: "full"
+use_iota_embed: True
+scan_layers: True
+logits_dot_in_fp32: False
+shardy: false
+
+# ── Dtypes ────────────────────────────────────────────────────────────────────
+dtype: bfloat16
+weight_dtype: bfloat16
+
+# ── MoE Runtime ──────────────────────────────────────────────────────────────
+megablox: False
+sparse_matmul: False
+capacity_factor: 1.25
+
+# ── Profiler ─────────────────────────────────────────────────────────────────
+profiler: "" #"xplane"
+upload_all_profiler_results: true
+skip_first_n_steps_for_profiler: 3
+profiler_steps: 1
+
+# ── Checkpointing ────────────────────────────────────────────────────────────
+enable_checkpointing: False
+async_checkpointing: False
+
+# ── Dataset ──────────────────────────────────────────────────────────────────
+dataset_type: "synthetic"
