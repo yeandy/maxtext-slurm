@@ -1,6 +1,6 @@
 ---
 name: batch-sweep
-description: "Four sweep operations: (1) Model perf sweep — find optimal batch size / TGS for a model. Use for: sweep batch size, tune TGS, benchmark throughput, find optimal config. (2) Node perf sweep — compare per-node GPU performance to find outliers. Use for: check nodes, node performance, find slow node, compare nodes. (3) Node network health sweep — detect inter-node network issues via multi-node bisection. Use for: network health, IB issues, RCCL problems, node pair testing, isolate network problem. (4) Commit validation sweep — test all model configs against a commit. Use for: regression test, validate commit, test all models, smoke test, CI."
+description: "Four sweep operations: (1) Model perf sweep — find optimal batch size / TGS for a model. Use for: sweep batch size, tune TGS, benchmark throughput, find optimal config. (2) Node perf sweep — compare per-node GPU performance to find outliers. Use for: check nodes, node performance, find slow node, compare nodes. (3) Node network health sweep — detect inter-node network issues via multi-node bisection. Use for: network health, IB issues, RCCL problems, node pair testing, isolate network problem. (4) Model sweep — run all model configs on one or two commits. Use for: regression test, validate commit, test all models, smoke test, CI, compare branches."
 ---
 
 # Sweep Operations
@@ -12,7 +12,7 @@ Four independent sweep operations for performance tuning and health validation. 
 | [Model perf sweep](#model-perf-sweep) | Batch size / config for max TGS | Multi-node, target model | Tuning a new model config |
 | [Node perf sweep](#node-perf-sweep) | Per-node GPU compute health | 1N per node, llama2-70b | Checking a set of nodes for outliers |
 | [Node network health sweep](#node-network-health-sweep) | Inter-node IB/RCCL health | 2N/4N subsets, llama2-70b | Isolating network problems between nodes |
-| [Commit validation sweep](#commit-validation-sweep) | All model configs runnable + TGS | Multi-node per model | Regression test after code/image changes |
+| [Model sweep](#model-sweep) | All model configs runnable + TGS | Multi-node per model | Verify a commit, or compare two commits for regressions |
 
 ## Common prerequisites
 
@@ -316,86 +316,154 @@ Since this only tests network health (not steady-state TGS), use `-- steps=1` to
 
 ---
 
-## Commit validation sweep
+## Model sweep
 
-Compare TGS of clean `main` branch vs. the current working tree (with unstaged/staged changes) across all model configs. Use to validate that code changes, config tweaks, or image updates don't regress performance or break models.
+Run all model configs on one or more commits/branches and report TGS. Use to verify a commit works, smoke-test a branch, or compare two code states for regressions.
 
-### Workflow
+**Modes:**
 
-1. **Enumerate all model configs:**
+| User says | Commits to run | Output |
+|-----------|---------------|--------|
+| "sweep all models" / "verify this branch" | Current HEAD (1 commit) | Single-commit results table |
+| "sweep all models on main" | The specified commit (1 commit) | Single-commit results table |
+| "compare branch X vs main" / specifies 2 commits | Both commits (2 commits) | Side-by-side comparison with delta |
 
-   ```bash
-   ls configs/*.gpu.yml | sed 's|configs/||;s|\.gpu\.yml||'
-   ```
+**Cross-turn comparison:** If the user runs multiple model sweeps in the same chat session (e.g. "sweep branch A", then "sweep branch B", then "sweep branch C"), produce an aggregate report after each new sweep. The aggregate table shows all sweeps side-by-side with delta TGS between each pair of adjacent turns. This avoids re-running jobs just to get comparisons.
 
-   Determine the required node count for each model from its config (`dcn_fsdp_parallelism` and other DCN axes).
+### Step 1: Determine commits
 
-2. **Run the baseline on clean `main`.**
+- **No commit specified** → use the current HEAD.
+- **One commit specified** → check out that commit.
+- **Two commits specified** → run both in sequence.
+- **Prior sweep(s) exist in this chat** → after completing the new sweep, produce the aggregate report covering all sweeps in the session with delta TGS between each adjacent pair.
 
-   First, check the current branch and stash any uncommitted changes:
-   ```bash
-   git stash  # if there are uncommitted changes
-   git checkout main
-   ```
+### Step 2: Enumerate model configs and node counts
 
-   Submit all models with `steps=15` and `dataset_type=synthetic`, on a fixed nodelist. Tag each job with `:main:` to identify baseline runs:
+Skip proxy configs (`ds-proxy*`) and `default`. Each model runs at one or more fixed node counts:
 
-   ```bash
-   for model in llama2-70b llama3.1-405b mixtral-8x22b grok-1 deepseek3-671b kimi-k2-1t; do
-     python3 /maxtext-slurm/.host-cmd/host_cmd.py \
-       "cd <repo_path> && ./submit.sh ${model}:main: -N <nodes> -w <nodelist> -- dataset_type=synthetic" \
-       --timeout 30
-   done
-   ```
+| Model | Node counts | Notes |
+|-------|------------|-------|
+| llama2-70b | 1N, 2N | Fast compile, good smoke test for single- and multi-node |
+| mixtral-8x22b | 4N, 8N | MoE; 4N is the native FSDP size, 8N adds data parallelism |
+| grok-1 | 8N | Large MoE, needs 8N |
+| llama3.1-405b | 8N | Dense 405B, needs 8N for memory |
+| deepseek3-671b | 8N | MoE 671B, native dcn_fsdp=8 |
+| kimi-k2-1t | 8N | MoE 1T, native dcn_fsdp=8 |
 
-   Monitor all jobs. Collect steady-state TGS (steps 5–14) from each passing model. This is the **baseline**.
+This produces **8 jobs per commit**.
 
-3. **Run the candidate on the current HEAD.**
+Pick a fixed 8-node nodelist. Use the full set for 8N jobs, a prefix for smaller jobs (first node for 1N, first 2 for 2N, first 4 for 4N). If running two commits, use the **same nodelists** for both — critical for valid comparison.
 
-   Switch back to the working branch and restore changes:
-   ```bash
-   git checkout <branch>
-   git stash pop  # if changes were stashed
-   ```
+### Step 3: Submit jobs
 
-   Submit the same models, tagged with `:candidate:`:
+Check out the target commit (stash uncommitted changes if needed). Submit all models with `-- steps=15 dataset_type=synthetic`. Tag jobs with the commit identifier (e.g. `:main:`, `:candidate:`, or a short SHA):
 
-   ```bash
-   for model in llama2-70b llama3.1-405b mixtral-8x22b grok-1 deepseek3-671b kimi-k2-1t; do
-     python3 /maxtext-slurm/.host-cmd/host_cmd.py \
-       "cd <repo_path> && ./submit.sh ${model}:candidate: -N <nodes> -w <nodelist> -- dataset_type=synthetic" \
-       --timeout 30
-   done
-   ```
+```bash
+NODELIST8="<n1,n2,n3,n4,n5,n6,n7,n8>"  # all 8 nodes
+NODELIST4="<n1,n2,n3,n4>"                # first 4
+NODELIST2="<n1,n2>"                      # first 2
+NODE1="<n1>"                             # first 1
+TAG="<commit_tag>"                       # e.g. "main", "candidate", short SHA
 
-   **Same nodelist as the baseline** — critical for valid comparison.
+# llama2-70b: 1N and 2N
+python3 /maxtext-slurm/.host-cmd/host_cmd.py \
+  "cd <repo_path> && ./submit.sh llama2-70b:${TAG}: -N 1 -w $NODE1 -- steps=15 dataset_type=synthetic" \
+  --timeout 30
+python3 /maxtext-slurm/.host-cmd/host_cmd.py \
+  "cd <repo_path> && ./submit.sh llama2-70b:${TAG}:2n -N 2 -w $NODELIST2 -- steps=15 dataset_type=synthetic" \
+  --timeout 30
 
-4. **Monitor all jobs.** Apply the [Monitoring policy](#monitoring-policy-applies-to-all-sweeps). For this sweep:
-   - **OOM on candidate but not baseline** = regression. Flag as broken.
-   - **OOM on both** = pre-existing issue, not a regression.
-   - **Hang during RCCL init** = retry once. If persistent, flag as broken.
-   - **Hang during compile** = possible XLA regression. Flag as broken.
+# mixtral-8x22b: 4N and 8N
+python3 /maxtext-slurm/.host-cmd/host_cmd.py \
+  "cd <repo_path> && ./submit.sh mixtral-8x22b:${TAG}:4n -N 4 -w $NODELIST4 -- steps=15 dataset_type=synthetic" \
+  --timeout 30
+python3 /maxtext-slurm/.host-cmd/host_cmd.py \
+  "cd <repo_path> && ./submit.sh mixtral-8x22b:${TAG}: -N 8 -w $NODELIST8 -- steps=15 dataset_type=synthetic" \
+  --timeout 30
 
-5. **Build a comparison report:**
+# 8N-only models
+for model in grok-1 llama3.1-405b deepseek3-671b kimi-k2-1t; do
+  python3 /maxtext-slurm/.host-cmd/host_cmd.py \
+    "cd <repo_path> && ./submit.sh ${model}:${TAG}: -N 8 -w $NODELIST8 -- steps=15 dataset_type=synthetic" \
+    --timeout 30
+done
+```
 
-   ```markdown
-   | Model | Baseline Job | Baseline TGS | Candidate Job | Candidate TGS | Delta | Status |
-   |-------|-------------|-------------|--------------|--------------|-------|--------|
-   | llama2-70b | 9801 | 1,840 | 9811 | 1,842 | +0.1% | PASS |
-   | llama3.1-405b | 9802 | 980 | 9812 | 985 | +0.5% | PASS |
-   | deepseek3-671b | 9803 | 1,416 | 9813 | 1,416 | 0.0% | PASS |
-   | kimi-k2-1t | 9804 | 1,149 | 9814 | 1,149 | 0.0% | PASS |
-   | grok-1 | 9805 | 1,200 | 9815 | FAIL (OOM) | — | REGRESSION |
-   ```
+If running two commits, repeat step 3 for the second commit (check it out first, use a different `TAG`). Jobs targeting the same nodelist will queue sequentially in Slurm.
 
-6. **Evaluate:**
+### Step 4: Monitor jobs
 
-   | Outcome | Interpretation | Action |
-   |---------|---------------|--------|
-   | All PASS, TGS within ±2% | Candidate is safe | Report success |
-   | All PASS, one model TGS regressed >5% | Performance regression | Flag model + investigate |
-   | Candidate FAIL on model that passes on main | Breakage introduced | Flag broken models with failure details |
-   | Both baseline and candidate FAIL | Pre-existing issue | Note but don't blame the candidate |
-   | All candidate models FAIL | Fundamental issue | Stop — the change is broken |
+Apply the [Monitoring policy](#monitoring-policy-applies-to-all-sweeps).
 
-7. **Report** the full comparison table to the user. Highlight regressions and failures clearly, distinguishing new breakage from pre-existing issues.
+### Step 5: Collect steady-state TGS
+
+For each completed job, extract TGS from steps 5–14 (skip 0–4 for compilation warmup):
+
+```bash
+grep "^0: completed step: \(5\|6\|7\|8\|9\|10\|11\|12\|13\|14\)," outputs/<jobid>-*.log
+```
+
+Compute the average `Tokens/s/device` across steps 5–14.
+
+### Step 6: Build report
+
+**Single-commit report:**
+
+```markdown
+| Model | Nodes | Job | Avg TGS/device | Avg MFU | Status |
+|-------|-------|-----|----------------|---------|--------|
+| llama2-70b | 1N | 9801 | 1,840 | 34.9% | PASS |
+| llama2-70b | 2N | 9802 | 2,036 | 34.9% | PASS |
+| mixtral-8x22b | 4N | 9803 | 4,766 | 23.9% | PASS |
+| mixtral-8x22b | 8N | 9804 | 4,780 | 23.9% | PASS |
+| grok-1 | 8N | 9805 | 2,536 | 26.5% | PASS |
+| llama3.1-405b | 8N | 9806 | 674 | 34.0% | PASS |
+| deepseek3-671b | 8N | 9807 | 1,416 | 14.2% | PASS |
+| kimi-k2-1t | 8N | 9808 | 1,149 | 9.4% | PASS |
+```
+
+**Multi-sweep aggregate report (cross-turn or two-commit):**
+
+When there are 2+ sweeps (from explicit two-commit mode, or accumulated across chat turns), produce one table per model with all sweeps as columns and delta between each adjacent pair:
+
+```markdown
+### llama2-70b (1N)
+| Sweep | Commit | Job | TGS | Δ vs prev |
+|-------|--------|-----|-----|-----------|
+| 1 | main | 9801 | 1,840 | — |
+| 2 | feat-a | 9811 | 1,842 | +0.1% |
+| 3 | feat-b | 9821 | 1,810 | -1.7% |
+
+### llama2-70b (2N)
+| Sweep | Commit | Job | TGS | Δ vs prev |
+|-------|--------|-----|-----|-----------|
+| 1 | main | 9802 | 2,036 | — |
+| 2 | feat-a | 9812 | 2,038 | +0.1% |
+| 3 | feat-b | 9822 | 2,035 | -0.1% |
+
+### ... (one section per model × node-count)
+```
+
+For a simple two-sweep case this is equivalent to the old baseline-vs-candidate table, but scales naturally to 3+ sweeps without restructuring.
+
+### Step 7: Evaluate
+
+**Single-commit evaluation:**
+
+| Outcome | Action |
+|---------|--------|
+| All models complete | Report success with TGS table |
+| Some models OOM or fail | Report failures with details |
+| All models fail | Stop — fundamental issue with the commit |
+
+**Multi-sweep evaluation (adjacent-pair deltas):**
+
+| Outcome | Interpretation | Action |
+|---------|---------------|--------|
+| All deltas within ±2% | No regression between any pair | Report success |
+| Any delta >5% regression | Performance regression introduced by that sweep | Flag the sweep + model |
+| Model FAIL in sweep N but PASS in sweep N-1 | Breakage introduced by sweep N | Flag broken models with failure details |
+| Model FAIL in both sweep N and N-1 | Pre-existing issue | Note but don't blame sweep N |
+| All models FAIL in a sweep | Fundamental issue with that commit | Stop — the commit is broken |
+
+**Report** the full aggregate table to the user. Highlight regressions and failures clearly, distinguishing new breakage from pre-existing issues.
