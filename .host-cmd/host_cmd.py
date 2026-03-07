@@ -85,7 +85,7 @@ class HostBridge:
             raise ServerNotRunningError(
                 "host-cmd server is not responding. "
                 "Start it on the host with:\n"
-                "  cd .host-cmd && ./host_cmd_ctl.sh start"
+                "  cd .host-cmd && ./host-cmd-ctl.sh start"
             )
 
     # ------------------------------------------------------------------
