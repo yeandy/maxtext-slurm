@@ -352,20 +352,32 @@ Skip proxy configs (`ds-proxy*`) and `default`. Each model runs at one or more f
 
 This produces **8 jobs per commit**.
 
-Pick a fixed 8-node nodelist. Use the full set for 8N jobs, a prefix for smaller jobs (first node for 1N, first 2 for 2N, first 4 for 4N). If running two commits, use the **same nodelists** for both — critical for valid comparison.
+Pick a fixed 8-node nodelist. Assign **non-overlapping** subsets for sub-8N jobs so they can run in parallel:
+
+```
+Nodes:    n1    n2    n3    n4    n5    n6    n7    n8
+1N job:   [n1]
+2N job:               [n3,  n4]
+4N job:                           [n5,  n6,  n7,  n8]
+8N jobs:  [n1,  n2,   n3,  n4,   n5,  n6,  n7,  n8]
+```
+
+The 1N, 2N, and 4N jobs use disjoint nodes (1 + 2 + 4 = 7 ≤ 8), so they run **in parallel**. The 8N jobs need all 8 nodes and queue **sequentially** behind each other and behind any running sub-8N jobs.
+
+**Critical rule:** across multiple sweeps (different commits or chat turns), each model × node-count must always use the **same nodelist**. Hardware variance between nodes invalidates TGS comparisons.
 
 ### Step 3: Submit jobs
 
 Check out the target commit (stash uncommitted changes if needed). Submit all models with `-- steps=15 dataset_type=synthetic`. Tag jobs with the commit identifier (e.g. `:main:`, `:candidate:`, or a short SHA):
 
 ```bash
-NODELIST8="<n1,n2,n3,n4,n5,n6,n7,n8>"  # all 8 nodes
-NODELIST4="<n1,n2,n3,n4>"                # first 4
-NODELIST2="<n1,n2>"                      # first 2
-NODE1="<n1>"                             # first 1
+NODE1="<n1>"                             # 1N: disjoint from 2N and 4N
+NODELIST2="<n3,n4>"                      # 2N: disjoint from 1N and 4N
+NODELIST4="<n5,n6,n7,n8>"               # 4N: disjoint from 1N and 2N
+NODELIST8="<n1,n2,n3,n4,n5,n6,n7,n8>"   # 8N: all nodes
 TAG="<commit_tag>"                       # e.g. "main", "candidate", short SHA
 
-# llama2-70b: 1N and 2N
+# llama2-70b: 1N and 2N (run in parallel — disjoint nodes)
 python3 /maxtext-slurm/.host-cmd/host_cmd.py \
   "cd <repo_path> && ./submit.sh llama2-70b:${TAG}: -N 1 -w $NODE1 -- steps=15 dataset_type=synthetic" \
   --timeout 30
@@ -373,23 +385,22 @@ python3 /maxtext-slurm/.host-cmd/host_cmd.py \
   "cd <repo_path> && ./submit.sh llama2-70b:${TAG}:2n -N 2 -w $NODELIST2 -- steps=15 dataset_type=synthetic" \
   --timeout 30
 
-# mixtral-8x22b: 4N and 8N
+# mixtral-8x22b: 4N (runs in parallel with llama2-70b — disjoint nodes)
 python3 /maxtext-slurm/.host-cmd/host_cmd.py \
   "cd <repo_path> && ./submit.sh mixtral-8x22b:${TAG}:4n -N 4 -w $NODELIST4 -- steps=15 dataset_type=synthetic" \
   --timeout 30
-python3 /maxtext-slurm/.host-cmd/host_cmd.py \
-  "cd <repo_path> && ./submit.sh mixtral-8x22b:${TAG}: -N 8 -w $NODELIST8 -- steps=15 dataset_type=synthetic" \
-  --timeout 30
 
-# 8N-only models
-for model in grok-1 llama3.1-405b deepseek3-671b kimi-k2-1t; do
+# 8N jobs (queue sequentially — need all 8 nodes)
+for model in mixtral-8x22b grok-1 llama3.1-405b deepseek3-671b kimi-k2-1t; do
   python3 /maxtext-slurm/.host-cmd/host_cmd.py \
     "cd <repo_path> && ./submit.sh ${model}:${TAG}: -N 8 -w $NODELIST8 -- steps=15 dataset_type=synthetic" \
     --timeout 30
 done
 ```
 
-If running two commits, repeat step 3 for the second commit (check it out first, use a different `TAG`). Jobs targeting the same nodelist will queue sequentially in Slurm.
+The 1N + 2N + 4N jobs start immediately in parallel. Once they finish and free all nodes, the 8N jobs run one at a time.
+
+If running multiple commits, repeat step 3 for each (check it out first, use a different `TAG`). All 8N jobs across all commits queue sequentially on the same nodelist.
 
 ### Step 4: Monitor jobs
 
