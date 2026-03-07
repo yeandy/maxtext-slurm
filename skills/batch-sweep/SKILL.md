@@ -23,9 +23,37 @@ Four independent sweep operations for performance tuning and health validation. 
 
 Every submitted job must be actively monitored. Never submit-and-forget.
 
-**Polling:** Check the log every 60–120s. If no new output, exponential backoff up to 5 min.
+### Progressive reporting
 
-**Hang detection:** A job is hanging if no new log output for **10+ minutes** while `squeue` shows it `RUNNING`. Actions:
+**Report each result as it lands.** Don't wait until all jobs finish. When a job completes (or fails), immediately print a one-line summary:
+
+```
+llama2-70b 1N (job 9801): 2,036 TGS/device, 34.9% MFU — PASS
+grok-1 8N (job 9805): OOM — FAIL
+```
+
+This gives the user early signal. The full aggregate table is still built at the end.
+
+### Fail-fast
+
+When a job fails, report it immediately and classify:
+
+| Failure type | Action |
+|-------------|--------|
+| OOM | Report, skip retries at same config, continue remaining jobs |
+| GPU hardware error (single node) | Report, exclude node, retry once if possible |
+| Config error (all nodes fail consistently) | **Stop the entire sweep.** Report and ask user how to proceed |
+| Hang (10+ min no output) | Cancel, retry once per hang rules below. If retry also hangs, mark FAIL and continue |
+
+For **model sweep** specifically: if 2+ models fail on the candidate but pass on the baseline (or a prior sweep), **stop early** — the commit is clearly broken. Report failures so far and ask the user whether to continue.
+
+### Polling
+
+Check the log every 60–120s. If no new output, exponential backoff up to 5 min.
+
+### Hang detection
+
+A job is hanging if no new log output for **10+ minutes** while `squeue` shows it `RUNNING`. Actions:
 
 1. Verify the job is yours (`outputs/<jobid>-*` exists).
 2. Cancel: `python3 /maxtext-slurm/.host-cmd/host_cmd.py "scancel <jobid>" --timeout 10`
@@ -37,7 +65,7 @@ Every submitted job must be actively monitored. Never submit-and-forget.
 | After `Memstats`, before `completed step: 0` | Silent OOM during XLA compile | No — treat as OOM |
 | After `completed step: 0` | RCCL error mid-training | Yes, once |
 
-**Failure detection:**
+### Failure detection
 
 | Log pattern | Meaning | Action |
 |-------------|---------|--------|
@@ -47,7 +75,7 @@ Every submitted job must be actively monitored. Never submit-and-forget.
 | One node `exit code 1`, others continue | Single-node crash | Exclude that node, retry. |
 | All nodes fail consistently | Config issue | **Stop the sweep.** Fix config before continuing. |
 
-**Bail-out rules (prevent infinite loops):**
+### Bail-out rules (prevent infinite loops)
 
 - **Max 2 retries per job.** If a job fails/hangs 3 times, mark it as failed and move on.
 - **Max 2 node exclusions per sweep.** If 3+ nodes are excluded, **stop the sweep** — the cluster is unhealthy. Report to user.
@@ -402,21 +430,19 @@ The 1N + 2N + 4N jobs start immediately in parallel. Once they finish and free a
 
 If running multiple commits, repeat step 3 for each (check it out first, use a different `TAG`). All 8N jobs across all commits queue sequentially on the same nodelist.
 
-### Step 4: Monitor jobs
+### Step 4: Monitor jobs and report progressively
 
-Apply the [Monitoring policy](#monitoring-policy-applies-to-all-sweeps).
+Apply the [Monitoring policy](#monitoring-policy-applies-to-all-sweeps). As each job completes (or fails), immediately:
 
-### Step 5: Collect steady-state TGS
+1. Extract steady-state TGS (steps 5–14, skip 0–4 for compilation warmup):
+   ```bash
+   grep "^0: completed step: \(5\|6\|7\|8\|9\|10\|11\|12\|13\|14\)," outputs/<jobid>-*.log
+   ```
+2. Compute the average `Tokens/s/device` and `MFU` across steps 5–14.
+3. **Report the result inline** — don't wait for all jobs to finish.
+4. If the job failed, apply fail-fast rules from the monitoring policy.
 
-For each completed job, extract TGS from steps 5–14 (skip 0–4 for compilation warmup):
-
-```bash
-grep "^0: completed step: \(5\|6\|7\|8\|9\|10\|11\|12\|13\|14\)," outputs/<jobid>-*.log
-```
-
-Compute the average `Tokens/s/device` across steps 5–14.
-
-### Step 6: Build report
+### Step 5: Build final report
 
 **Single-commit report:**
 
@@ -457,7 +483,7 @@ When there are 2+ sweeps (from explicit two-commit mode, or accumulated across c
 
 For a simple two-sweep case this is equivalent to the old baseline-vs-candidate table, but scales naturally to 3+ sweeps without restructuring.
 
-### Step 7: Evaluate
+### Step 6: Evaluate
 
 **Single-commit evaluation:**
 
