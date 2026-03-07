@@ -14,7 +14,7 @@ Run commands on the host from inside a Docker container, via a shared directory.
 
 ```bash
 cd /path/to/.host-cmd
-./host_cmd_ctl.sh start
+./host-cmd-ctl.sh start
 ```
 
 ### 2. From the CONTAINER — run commands
@@ -36,16 +36,16 @@ print(result["stdout"])
 
 ## Server Management
 
-All commands run on the host via `host_cmd_ctl.sh`:
+All commands run on the host via `host-cmd-ctl.sh`:
 
 ```bash
-./host_cmd_ctl.sh start       # start server
-./host_cmd_ctl.sh stop        # stop server
-./host_cmd_ctl.sh restart     # restart (e.g. after policy change)
-./host_cmd_ctl.sh status      # check if running
-./host_cmd_ctl.sh history     # list recent commands and exit codes
-./host_cmd_ctl.sh cleanup     # delete all result files
-./host_cmd_ctl.sh cleanup 24  # delete results older than 24 hours
+./host-cmd-ctl.sh start       # start server
+./host-cmd-ctl.sh stop        # stop server
+./host-cmd-ctl.sh restart     # restart (e.g. after policy change)
+./host-cmd-ctl.sh status      # check if running
+./host-cmd-ctl.sh history     # list recent commands and exit codes
+./host-cmd-ctl.sh cleanup     # delete all result files
+./host-cmd-ctl.sh cleanup 24  # delete results older than 24 hours
 ```
 
 ## Policy
@@ -59,14 +59,14 @@ the policy once at startup (immutable at runtime).
 If `policy.json` exists, it is used. Otherwise `policy.json.default` is
 used. The user's file fully replaces the default (no merging).
 
-Manage via `host_cmd_ctl.sh` (auto-restarts the server to apply):
+Manage via `host-cmd-ctl.sh` (auto-restarts the server to apply):
 
 ```bash
-./host_cmd_ctl.sh policy              # show current rules
-./host_cmd_ctl.sh deny '\bwhoami\b'   # add a deny pattern
-./host_cmd_ctl.sh allow '^squeue'     # add an allow pattern
-./host_cmd_ctl.sh undeny '\bwhoami\b' # remove a deny pattern
-./host_cmd_ctl.sh unallow '^squeue'   # remove an allow pattern
+./host-cmd-ctl.sh policy              # show current rules
+./host-cmd-ctl.sh deny '\bwhoami\b'   # add a deny pattern
+./host-cmd-ctl.sh allow '^squeue'     # add an allow pattern
+./host-cmd-ctl.sh undeny '\bwhoami\b' # remove a deny pattern
+./host-cmd-ctl.sh unallow '^squeue'   # remove an allow pattern
 ```
 
 Evaluation order: deny first, then allow. If `allow_patterns` is empty,

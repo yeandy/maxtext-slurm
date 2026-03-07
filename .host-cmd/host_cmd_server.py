@@ -9,7 +9,7 @@ lives is the shared directory — no config needed.
 Usage:
     python3 host_cmd_server.py                        # foreground
     python3 host_cmd_server.py --poll-interval 0.5    # faster polling
-    ./host_cmd_ctl.sh start                           # managed start
+    ./host-cmd-ctl.sh start                           # managed start
 """
 
 import argparse
@@ -386,7 +386,7 @@ def main():
             "Another server is already running (%s). Exiting.\n"
             "If the other server is dead, its lock will have been "
             "auto-released. If you see this after a crash, check "
-            "with host_cmd_ctl.sh status or remove %s manually.",
+            "with host-cmd-ctl.sh status or remove %s manually.",
             info,
             LOCK_FILE,
         )

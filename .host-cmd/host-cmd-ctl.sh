@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 #
-# host_cmd_ctl.sh — manage the host-cmd server and policy.
+# host-cmd-ctl.sh — manage the host-cmd server and policy.
 # Run this ON THE HOST, not inside the container.
 #
 # Usage:
-#   ./host_cmd_ctl.sh start
-#   ./host_cmd_ctl.sh stop
-#   ./host_cmd_ctl.sh restart
-#   ./host_cmd_ctl.sh status
-#   ./host_cmd_ctl.sh history            # list recent command results
-#   ./host_cmd_ctl.sh history 10         # last 10 results
-#   ./host_cmd_ctl.sh cleanup            # delete all results
-#   ./host_cmd_ctl.sh cleanup 24         # delete results older than 24h
-#   ./host_cmd_ctl.sh policy             # show current policy
-#   ./host_cmd_ctl.sh deny  PATTERN      # add a deny pattern (restarts server)
-#   ./host_cmd_ctl.sh allow PATTERN      # add an allow pattern (restarts server)
-#   ./host_cmd_ctl.sh undeny  PATTERN    # remove a deny pattern (restarts server)
-#   ./host_cmd_ctl.sh unallow PATTERN    # remove an allow pattern (restarts server)
+#   ./host-cmd-ctl.sh start
+#   ./host-cmd-ctl.sh stop
+#   ./host-cmd-ctl.sh restart
+#   ./host-cmd-ctl.sh status
+#   ./host-cmd-ctl.sh history            # list recent command results
+#   ./host-cmd-ctl.sh history 10         # last 10 results
+#   ./host-cmd-ctl.sh cleanup            # delete all results
+#   ./host-cmd-ctl.sh cleanup 24         # delete results older than 24h
+#   ./host-cmd-ctl.sh policy             # show current policy
+#   ./host-cmd-ctl.sh deny  PATTERN      # add a deny pattern (restarts server)
+#   ./host-cmd-ctl.sh allow PATTERN      # add an allow pattern (restarts server)
+#   ./host-cmd-ctl.sh undeny  PATTERN    # remove a deny pattern (restarts server)
+#   ./host-cmd-ctl.sh unallow PATTERN    # remove an allow pattern (restarts server)
 #
 set -euo pipefail
 
