@@ -194,7 +194,7 @@ Apply this checklist **in full**:
 
 When `RESOURCE_EXHAUSTED: Out of memory while trying to allocate` appears:
 
-1. **Check `XLA_PYTHON_CLIENT_MEM_FRACTION` first.** This is the most common cause of GPU OOM on large models — not wrong parallelism or batch size. Find the value in the log header (env var dump) or `train_env.sh`. The default is `.85`, which works for most models but is **too low for 405B-class models**. Increasing to `.93` is often the complete fix. See `docs/job-submission.md` ("Per-run overrides" section) for documented examples of this exact failure and fix.
+1. **Check `XLA_PYTHON_CLIENT_MEM_FRACTION` first.** This is the most common cause of GPU OOM on large models — not wrong parallelism or batch size. Find the value in the log header (env var dump), `configs/<model>.env.sh` (per-model override), or `train_env.sh` (global default). The default is `.85`, which works for most models but is **too low for 405B-class and 1T-class models**. Increasing to `.93` is often the complete fix. Note: XLA may inflate allocations when more memory is available, so increasing the fraction doesn't always yield proportional headroom. See `docs/job-submission.md` ("Per-model environment overrides" section) for the override layering.
 
 2. **Do NOT jump to parallelism changes.** A 405B model running on 8 nodes with `ici_fsdp_parallelism=-1` and `ici_tensor_parallelism=1` is a valid, tested configuration — it works correctly once the memory fraction is right. The OOM error message ("Out of memory while trying to allocate 221.71GiB") can be misleading: it does not mean the model fundamentally doesn't fit, just that JAX wasn't given enough of the GPU's physical memory.
 

@@ -62,6 +62,13 @@ done
 # ---- Load environment configuration (edit train_env.sh to customize) ----
 source "$SCRIPT_DIR/train_env.sh"
 
+# ---- Load per-model environment overrides (optional) ----
+_model_env="$SCRIPT_DIR/configs/$MODEL_NAME.env.sh"
+if [[ -f "$_model_env" ]]; then
+    echo "Loading per-model env: configs/$MODEL_NAME.env.sh"
+    source "$_model_env"
+fi
+
 # Export extracted environment variables (after train_env.sh so overrides win).
 if [ ${#EXTRACTED_ENVS[@]} -gt 0 ]; then
     echo "Exporting extracted environment variables:"
