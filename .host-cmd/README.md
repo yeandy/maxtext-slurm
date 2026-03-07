@@ -73,6 +73,12 @@ Evaluation order: deny first, then allow. If `allow_patterns` is empty,
 all non-denied commands are permitted. If non-empty, only matching
 commands pass.
 
+**Security note**: `deny_patterns` is a guardrail against accidental
+damage, not a security boundary. Shell commands can be obfuscated to
+bypass regex filters (scripts, encoding, variable expansion, etc.).
+For actual lockdown, use `allow_patterns` as a whitelist — only
+explicitly matched commands will run, everything else is rejected.
+
 ## Architecture
 
 Multiple containers can share one server. Each command gets a unique ID,
