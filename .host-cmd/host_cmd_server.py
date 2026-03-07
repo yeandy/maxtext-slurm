@@ -350,6 +350,13 @@ def cleanup(_sig=None, _frame=None):
     sys.exit(0)
 
 
+def _is_in_container() -> bool:
+    try:
+        return "container" in Path("/proc/1/cgroup").read_text()
+    except OSError:
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="host-cmd server")
     parser.add_argument(
@@ -359,6 +366,13 @@ def main():
         help="Seconds between queue polls (default: 0.5)",
     )
     args = parser.parse_args()
+
+    if Path("/.dockerenv").exists() or _is_in_container():
+        _log.error(
+            "Refusing to start inside a container. "
+            "The server must run on the host. Exiting."
+        )
+        sys.exit(1)
 
     for d in (QUEUE_DIR, RUNNING_DIR, RESULTS_DIR):
         d.mkdir(parents=True, exist_ok=True)

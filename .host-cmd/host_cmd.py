@@ -206,9 +206,10 @@ class HostBridge:
         pf.write_text(json.dumps(policy, indent=2) + "\n")
 
     def policy_list(self) -> dict:
-        pf = self.dir / "policy.json"
-        if pf.exists():
-            return {"source": str(pf), **json.loads(pf.read_text())}
+        for name in ("policy.json", "policy.json.default"):
+            pf = self.dir / name
+            if pf.exists():
+                return {"source": str(pf), **json.loads(pf.read_text())}
         return {"source": "none"}
 
     def policy_add(self, pattern: str, kind: str = "deny"):
