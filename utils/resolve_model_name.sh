@@ -8,6 +8,14 @@ resolve_model_name() {
   local input_model="$2"
   local _prev_nullglob=$(shopt -p nullglob)
   shopt -s nullglob
+
+  # Exact match takes priority over substring glob.
+  if [[ -f "$configs_dir/$input_model.gpu.yml" ]]; then
+    $_prev_nullglob
+    echo "$input_model"
+    return 0
+  fi
+
   local matches=("$configs_dir"/*"$input_model"*".gpu.yml")
 
   if (( ${#matches[@]} == 1 )); then
