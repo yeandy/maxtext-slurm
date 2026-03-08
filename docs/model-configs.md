@@ -109,6 +109,8 @@ Example (`configs/my-large-model.env.sh`):
 export XLA_PYTHON_CLIENT_MEM_FRACTION=.93
 ```
 
+Per-model env files can also set `MAXTEXT_PATCH_BRANCH` to check out a branch that adds support for models not yet in the image's default MaxText (e.g. `export MAXTEXT_PATCH_BRANCH="feature/new-model-support"`).
+
 Per-model env files are optional — models without one use the global `train_env.sh` defaults. CLI `_env_` overrides always take precedence, so per-job tuning still works.
 
 ## CLI overrides
