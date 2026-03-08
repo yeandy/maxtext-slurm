@@ -2,7 +2,8 @@
 
 # Container environment configuration.
 # Edit this file to switch images, paths, or deployment-specific settings.
-# Sourced by _container.sh before launching the container.
+# Sourced by _container.sh before launching the container
+# and by in_container_run.sh for MAXTEXT_REPO_DIR and MAXTEXT_PATCH_BRANCH.
 # All variables can be overridden from the command line, e.g.:
 #   DOCKER_IMAGE=my/image:tag ./run_local.sh model_name -- ...
 
@@ -21,7 +22,7 @@ fi
 DOCKER_IMAGE="${DOCKER_IMAGE:-rocm/jax-training:maxtext-v26.2}"
 DOCKER_IMAGE_HAS_AINIC="${DOCKER_IMAGE_HAS_AINIC:-true}"    # Set to false only if you know the image lacks AINIC
 MAXTEXT_REPO_DIR="${MAXTEXT_REPO_DIR:-/workspace/maxtext}"  # MaxText location inside the container
-MAXTEXT_PATCH_BRANCH="${MAXTEXT_PATCH_BRANCH:-}"            # Hotfix/debug branch to check out at startup (empty = use image default)
+MAXTEXT_PATCH_BRANCH="${MAXTEXT_PATCH_BRANCH:-}"            # Global patch branch (empty = image default); per-model .env.sh can override
 # ── end Docker image ──────────────────────────────────────────────────────────
 
 # ── Host paths to mount ───────────────────────────────────────────────────────

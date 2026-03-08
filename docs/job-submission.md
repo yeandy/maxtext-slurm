@@ -190,7 +190,7 @@ Sourced by `_container.sh` before launching the container (and by `in_container_
 | `DOCKER_IMAGE` | `rocm/jax-training:maxtext-v26.1` | Docker image to run |
 | `DOCKER_IMAGE_HAS_AINIC` | `true` | Set to `false` only if you know the image lacks AINIC |
 | `MAXTEXT_REPO_DIR` | `/workspace/maxtext` | MaxText location inside the container |
-| `MAXTEXT_PATCH_BRANCH` | _(empty)_ | Hotfix/debug branch to check out at startup (empty = use image default) |
+| `MAXTEXT_PATCH_BRANCH` | _(empty)_ | Global patch branch (empty = image default); per-model `.env.sh` can override |
 | `DATASET_DIR` | `/mnt/vast/datasets` | Host path to datasets (mounted read-only as `/datasets` inside the container) |
 | `COREDUMP_EXTRA_DIRS` | `"/perf_apps/maxtext_coredump"` | Extra coredump directories to probe (comma-separated for CLI; see [Debugging: Core Dumps](debugging.md#where-core-dumps-go)) |
 
@@ -222,7 +222,7 @@ export DOCKER_IMAGE=my/custom:tag
 
 For `submit.sh`, overrides propagate through Slurm automatically: `sbatch` captures the submit-time environment, and `srun --export=ALL` propagates it to all worker nodes.
 
-Both registry images and local `.tar` tarballs are supported. `DOCKER_IMAGE_HAS_AINIC` controls whether the container uses built-in AINIC networking or falls back to host IB mounts. `MAXTEXT_PATCH_BRANCH`, when non-empty, causes `_container.sh` to fetch and check out that hotfix or debug branch inside the container's MaxText repo at startup.
+Both registry images and local `.tar` tarballs are supported. `DOCKER_IMAGE_HAS_AINIC` controls whether the container uses built-in AINIC networking or falls back to host IB mounts. `MAXTEXT_PATCH_BRANCH`, when non-empty, checks out that branch inside the container's MaxText repo at startup. Per-model `.env.sh` files can also set `MAXTEXT_PATCH_BRANCH` to override at training time (see `_train.sh`).
 
 **Private images.** `_container.sh` tries an anonymous pull first. If the image is private, log in to the registry once on the cluster (one-time setup). In most HPC environments, home directories are on a shared filesystem, so all worker nodes inherit the credentials automatically:
 
@@ -267,7 +267,7 @@ The full override order is:
 train_env.sh (global)  →  configs/<model>.env.sh (per-model)  →  _env_ CLI (per-run)
 ```
 
-Each layer overrides the previous. For example, `train_env.sh` sets `XLA_PYTHON_CLIENT_MEM_FRACTION=.85`, a per-model env file can raise it to `.93` for a memory-hungry model, and a CLI `_env_` override can adjust it further for a one-off experiment.
+Each layer overrides the previous. For example, `train_env.sh` sets `XLA_PYTHON_CLIENT_MEM_FRACTION=.85`, a per-model env file can raise it to `.93` for a memory-hungry model, and a CLI `_env_` override can adjust it further for a one-off experiment. Per-model env files can also set `MAXTEXT_PATCH_BRANCH` to check out a branch that adds support for models not yet in the image's default MaxText.
 
 Per-model env files are optional — models without one use the global `train_env.sh` defaults. See [Model Configs: Per-model environment overrides](model-configs.md#per-model-environment-overrides) for details.
 

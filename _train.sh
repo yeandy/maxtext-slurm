@@ -78,6 +78,20 @@ if [ ${#EXTRACTED_ENVS[@]} -gt 0 ]; then
     done
 fi
 
+# ---- Apply MaxText patch branch (if requested) ----
+# Priority: CLI _env_MAXTEXT_PATCH_BRANCH > per-model .env.sh > container env
+if [[ -n "${MAXTEXT_PATCH_BRANCH:-}" ]]; then
+    echo "[INFO] Checking out $MAXTEXT_PATCH_BRANCH..."
+    if git fetch origin "$MAXTEXT_PATCH_BRANCH" && git checkout "origin/$MAXTEXT_PATCH_BRANCH"; then
+        echo "[OK] Checked out $MAXTEXT_PATCH_BRANCH at $(git rev-parse --short HEAD)."
+    else
+        echo "[FAIL] Failed to check out $MAXTEXT_PATCH_BRANCH." >&2
+        exit 1
+    fi
+else
+    echo "[SKIP] No MAXTEXT_PATCH_BRANCH set, using image default."
+fi
+
 # Assertion: users may override env vars after train_env.sh is sourced.
 # If DMABUF gets re-enabled without host kernel metadata, fail fast here.
 if [[ "${NCCL_DMABUF_ENABLE:-}" == "1" ]]; then

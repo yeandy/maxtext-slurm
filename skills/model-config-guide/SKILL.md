@@ -121,6 +121,13 @@ For permanent per-model overrides, create a `configs/<model>.env.sh` file (sourc
 export XLA_PYTHON_CLIENT_MEM_FRACTION=.93
 ```
 
+If the model is not yet supported by the image's default MaxText branch, set `MAXTEXT_PATCH_BRANCH` in the `.env.sh` to check out a branch that adds support:
+
+```bash
+# configs/new-model.env.sh
+export MAXTEXT_PATCH_BRANCH="feature/new-model-support"
+```
+
 ### Step 5: Set dtypes and quantization
 
 Default for most models:

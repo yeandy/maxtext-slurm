@@ -82,19 +82,8 @@ ls /opt 2>/dev/null || true
 # and MAXTEXT_PATCH_BRANCH are relevant; Docker-specific vars are ignored)
 source "$SCRIPT_DIR/container_env.sh"
 MAXTEXT_REPO_DIR="${MAXTEXT_REPO_DIR:-/workspace/maxtext}"
+[[ -n "${MAXTEXT_PATCH_BRANCH:-}" ]] && export MAXTEXT_PATCH_BRANCH
 cd "$MAXTEXT_REPO_DIR"
-
-if [[ -n "${MAXTEXT_PATCH_BRANCH:-}" ]]; then
-    echo "[INFO] Checking out $MAXTEXT_PATCH_BRANCH..."
-    if git fetch origin "$MAXTEXT_PATCH_BRANCH" && git checkout "origin/$MAXTEXT_PATCH_BRANCH"; then
-        echo "[OK] Checked out $MAXTEXT_PATCH_BRANCH in the local maxtext repo."
-    else
-        echo "[FAIL] Failed to check out $MAXTEXT_PATCH_BRANCH in the local maxtext repo." >&2
-        exit 1
-    fi
-else
-    echo "[SKIP] No MAXTEXT_PATCH_BRANCH set, using image default."
-fi
 
 # ============================================================================
 # Launch training
