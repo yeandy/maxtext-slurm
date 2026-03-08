@@ -374,11 +374,12 @@ Skip proxy configs (`ds-proxy*`) and `default`. Each model runs at one or more f
 | llama2-70b | 1N, 2N | Fast compile, good smoke test for single- and multi-node |
 | mixtral-8x22b | 4N, 8N | MoE; 4N is the native FSDP size, 8N adds data parallelism |
 | grok-1 | 8N | Large MoE, needs 8N |
+| grok-2 | 8N | Large MoE, needs 8N; scan_layers=false required |
 | llama3.1-405b | 8N | Dense 405B, needs 8N for memory |
 | deepseek3-671b | 8N | MoE 671B, native dcn_fsdp=8 |
 | kimi-k2-1t | 8N | MoE 1T, native dcn_fsdp=8 |
 
-This produces **8 jobs per commit**.
+This produces **9 jobs per commit**.
 
 Pick a fixed 8-node nodelist. Assign **non-overlapping** subsets for sub-8N jobs so they can run in parallel:
 
