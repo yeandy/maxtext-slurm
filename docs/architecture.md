@@ -98,9 +98,9 @@ The utility is launcher-agnostic (pure bash) — see the header comment in `util
 
 ## Preflight and environment
 
-Before training starts, `_job.sbatch` runs per-host preflight checks (`preflight.sh`) that clean up leftover GPU processes, prune stale containers, and tune system settings (THP, NUMA). `docker_utils.sh` auto-detects a usable container runtime — prefers [Podman](https://podman.io/) (rootless), falls back to [Docker](https://www.docker.com/). `choose_nccl_socket_ifname.sh` deterministically selects the same network interface on all nodes for NCCL/RCCL communication.
+Before training starts, `_job.sbatch` runs per-host preflight checks (`preflight.sh`) that clean up leftover GPU processes, prune stale containers, and tune system settings (THP, NUMA). `docker_utils.sh` auto-detects a usable container runtime — prefers [Podman](https://podman.io/) (rootless), falls back to [Docker](https://www.docker.com/).
 
-`train_env.sh` centralizes runtime environment variables (XLA, NCCL, ROCm, Transformer Engine). `_train.sh` sources it before launching training; `_env_KEY=VALUE` passthrough args override it per-run. See [Job Submission: Environment Configuration](job-submission.md#environment-configuration) for details.
+`train_env.sh` centralizes runtime environment variables (XLA, NCCL, ROCm, Transformer Engine). `_train.sh` sources it before launching training; `_env_KEY=VALUE` passthrough args override it per-run. See [Job Submission: Environment Configuration](job-submission.md#environment-configuration) for details. NCCL network settings (IB HCA, QoS traffic class, socket interface) are auto-detected at runtime by `detect_nccl_env.sh` — sourced by `train_env.sh` in script mode and by `_container.sh` in interactive mode. This runs inside the container (or directly on the host for non-container paths like `in_container_run.sh`), so the same detection logic works regardless of the execution environment.
 
 ## Container boundary
 
