@@ -339,6 +339,7 @@ Use inline when the model doesn't exist in MaxText's registry, or when you need 
 | `deepseek3-671b` | model-name, MoE | DCN FSDP=8 / ICI expert=8 | Large MoE |
 | `kimi-k2-1t` | model-name, MoE | DCN FSDP=8 / ICI expert=8 | Same pattern as deepseek3 |
 | `grok-1` | inline, MoE | DCN FSDP=4 / ICI expert=8 | Inline architecture, FP8 |
+| `grok-2` | inline, MoE | DCN FSDP=4 / ICI expert=8 | Inline, FP8, softcapping, scan_layers=false (XLA ROCm bug) |
 | `default` | model-name, small | DCN data / ICI FSDP | Smoke test, HF dataset |
 
 See [docs/model-configs.md](../../docs/model-configs.md) for config resolution and CLI override details.
