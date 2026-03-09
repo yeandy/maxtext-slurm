@@ -12,6 +12,7 @@ Structured instructions for AI agents. Each skill encodes the methodology from v
 | [coredump-debug](coredump-debug/SKILL.md) | "coredump", "core file", "SIGSEGV", "segfault", "crash dump", GDB backtrace analysis, crash root cause |
 | [model-config-guide](model-config-guide/SKILL.md) | "add model", "create config", "model config", ".gpu.yml", parallelism, batch size, quantization, OOM tuning |
 | [batch-sweep](batch-sweep/SKILL.md) | "sweep", "find optimal batch size", "tune TGS", "benchmark throughput", "maximize tokens per second" |
+| [notifications](notifications/SKILL.md) | "notify me", "send TG message", "alert when done", "Telegram", cross-cutting notification for any skill |
 
 ## How agents discover skills
 
