@@ -378,8 +378,9 @@ Skip proxy configs (`ds-proxy*`) and `default`. Each model runs at one or more f
 | llama3.1-405b | 8N | Dense 405B, needs 8N for memory |
 | deepseek3-671b | 8N | MoE 671B, native dcn_fsdp=8 |
 | kimi-k2-1t | 8N | MoE 1T, native dcn_fsdp=8 |
+| qwen3-480b-a35b | 8N | MoE 480B, native dcn_fsdp=8 |
 
-This produces **9 jobs per commit**.
+This produces **10 jobs per commit**.
 
 Pick a fixed 8-node nodelist. Assign **non-overlapping** subsets for sub-8N jobs so they can run in parallel:
 

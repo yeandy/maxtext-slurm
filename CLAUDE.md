@@ -8,5 +8,6 @@ For TSDB diagnosis tasks (metrics queries, GPU/network health, incident root cau
 For coredump debugging (GDB analysis, source code identification, crash root cause from core files), follow the instructions in `skills/coredump-debug/SKILL.md`.
 For model config tasks (adding a model, creating .gpu.yml configs, parallelism, batch size, quantization), follow the instructions in `skills/model-config-guide/SKILL.md`.
 For batch size sweeps (find optimal TGS, benchmark throughput, tune per_device_batch_size), follow the instructions in `skills/batch-sweep/SKILL.md`.
+For sending Telegram notifications (notify me, send TG message, alert when done), follow the instructions in `skills/notifications/SKILL.md`.
 
 **Multi-job performance comparisons** (e.g., "why is job B slower than job A?"): Start with `skills/tsdb-diagnosis/SKILL.md` (Multi-Job Comparison workflow) to check system-level metrics (process counts, network, I/O, GPU health) before running `skills/performance-analysis/SKILL.md`. TSDB surfaces root causes that TraceLens cannot see (CPU contention, RCCL resource leaks, network errors). Only fall back to TraceLens if the TSDB comparison is inconclusive.
