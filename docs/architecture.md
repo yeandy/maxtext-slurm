@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the layered architecture that makes each component (scheduler, container runtime, training framework) independently adaptable. For concrete adaptation paths, see [Extensibility](extensibility.md).
+This document describes the layered architecture that makes each component (scheduler, container runtime, training framework) independently adaptable. For concrete adaptation paths, see [Extensibility](extensibility.md). For the Kubernetes orchestration tier (`k8s_submit.sh`, `_k8s_job.sh`), see [Kubernetes job submission](k8s-job-submission.md).
 
 ## Training flow
 

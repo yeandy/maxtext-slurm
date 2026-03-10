@@ -13,12 +13,14 @@ Classify a job's status and failure mode from its log file and recommend targete
    - **Given a job directory** → follow the `log` symlink inside it to find the log file.
    - **Given a `.log` file** → the job directory is the sibling directory with the same name minus `.log` (e.g., `outputs/7877-FOO.log` → `outputs/7877-FOO/`).
    - **Given a Slurm ID** → look for `outputs/<id>-*` (directory) or `outputs/<id>-*.log` (log file).
+   - **Given a k8s job ID** (e.g., `k8s-20260310-080957-475e`) → same pattern: `outputs/<id>-*`.
 
    Having the job directory gives access to `ray_logs/`, `prometheus/`, xplane profiles, and other per-job artifacts needed for deeper diagnosis.
 
    **Directory layout:** The `outputs/` folder contains:
-   - **Job directories** — always have a `log` symlink (pointing to `../<dirname>.log`). Named `<slurm_id>-<config>` or `local_<timestamp>-<config>`.
+   - **Job directories** — always have a `log` symlink (pointing to `../<dirname>.log`). Named `<slurm_id>-<config>`, `k8s_<timestamp>-<config>`, or `local_<timestamp>-<config>`.
    - **Log files** — `<dirname>.log` files, siblings of their job directories.
+   - **Per-rank logs (k8s only)** — `rank-N.log` files inside the job directory. The primary `.log` file contains only rank 0's output. For node-specific failures on k8s jobs, check `outputs/<id>-<name>/rank-N.log` for the failing rank's full output. These per-rank logs are NOT present in Slurm jobs (Slurm puts all ranks in one file via `srun -l`).
    - **Shared checkpoint directories** — hold checkpoint files and TensorBoard data, shared across runs. **No `log` symlink.** Created when `enable_checkpointing=true`.
 
    When triaging all jobs in `outputs/`, skip directories that have no `log` symlink — they are shared checkpoint dirs, not jobs.
@@ -177,8 +179,10 @@ Apply this checklist **in full**:
    ```bash
    # For RAY=1 jobs, sum step seconds from a worker log (authoritative, not the truncated Slurm log):
    grep "completed step:" <job_dir>/ray_logs/<any_host>/worker*.out | sed 's/.*seconds: //' | sed 's/,.*//' | awk '{s+=$1} END {print s}'
-   # For RAY=0 jobs, sum from the Slurm log (filter to one task to avoid double-counting):
+   # For RAY=0 Slurm jobs, sum from the log (filter to rank 0 to avoid double-counting):
    grep "^.0:.*completed step:" <log_file> | sed 's/.*seconds: //' | sed 's/,.*//' | awk '{s+=$1} END {print s}'
+   # For k8s jobs, the primary log already contains only rank 0 — no rank prefix to filter:
+   grep "completed step:" <log_file> | sed 's/.*seconds: //' | sed 's/,.*//' | awk '{s+=$1} END {print s}'
    ```
    Compare against wall time from the JOB SUMMARY. **If the gap exceeds setup/compilation overhead (~15-30 min), there was a stall.** Do not estimate — compute the actual sum. A hand-waved estimate can hide a 40-60 minute hang inside "expected overhead."
 

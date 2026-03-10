@@ -30,10 +30,10 @@ Each layer communicates with its neighbors through environment variables and cal
 
 **To add a new scheduler** (e.g., Kubernetes):
 
-1. Write a new orchestration entry point (e.g., `submit_k8s.sh` + a Job/JobSet manifest) that sets the same generic env vars (`JOB_ID`, `NNODES`, `NODE_RANK`, `JAX_COORDINATOR_IP`, `NODELIST_EXPANDED`). For observability, also set `RAY=1`. See the env var contract documented at the top of `_container.sh`.
-2. Call `_container.sh` with the same positional args (`$JAX_PORT $MODEL_NAME $EXP_TAG $MODEL_NAME_ALIAS -- $PASSTHROUGH_ARGS`). Everything from `_container.sh` downward runs unmodified — it derives `MODE`, maps `RAY` → `USE_RAY`, handles Docker launch, and conditionally passes the right env vars to the training container.
+1. Write a new orchestration entry point that sets the same generic env vars (`JOB_ID`, `NNODES`, `NODE_RANK`, `JAX_COORDINATOR_IP`, `NODELIST_EXPANDED`). For observability, also set `RAY=1`. See the env var contract documented at the top of `_container.sh`.
+2. Call `in_container_run.sh` (when the pod IS the container) or `_container.sh` (when Docker launch is needed). Everything downstream runs unmodified.
 
-For Kubernetes user guidance, see [Kubernetes direct-container runs](k8s-direct-container.md).
+This has been implemented for Kubernetes: `k8s_submit.sh` generates an Indexed Job manifest that calls `_k8s_job.sh` (coordinator discovery + barrier), which delegates to `in_container_run.sh`. See [Kubernetes job submission](k8s-job-submission.md).
 
 **Effort:** New files only. No changes to existing layers. See [Architecture: Orchestrator Extensibility](architecture.md#orchestrator-extensibility) for the tier table.
 

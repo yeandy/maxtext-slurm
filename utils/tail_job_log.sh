@@ -51,8 +51,8 @@ EOF
       echo "No log files found in $default_dir" >&2
       return 1
     fi
-  elif [[ "$arg" =~ ^[0-9]+$ ]]; then
-    # Pure integer — treat as a Slurm job ID
+  elif [[ "$arg" =~ ^[0-9]+$ || "$arg" =~ ^k8s- || "$arg" =~ ^local_ ]]; then
+    # Job ID — numeric (Slurm), k8s-* (Kubernetes), or local_* (run_local)
     latest=$(_find_latest_log "$default_dir" "$arg-*")
     if [[ -z "$latest" ]]; then
       echo "No log files found for job ID $arg in $default_dir" >&2
