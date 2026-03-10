@@ -168,8 +168,11 @@ When excluding a node due to failures, the total node count may drop below what 
 
 For each completed run, extract **steady-state TGS** from steps 5–14 (skip steps 0–4 for compilation warmup):
 
-```
+```bash
+# Slurm logs (srun -l rank prefix):
 grep "^0: completed step: \(5\|6\|7\|8\|9\|10\|11\|12\|13\|14\)," outputs/<jobid>-*.log
+# K8s logs (rank 0 only, no prefix):
+grep "completed step: \(5\|6\|7\|8\|9\|10\|11\|12\|13\|14\)," outputs/<jobid>-*.log
 ```
 
 Use node 0's values (all nodes report identical metrics). Compute the average `Tokens/s/device` across steps 5–14.

@@ -438,7 +438,9 @@ def _detect_job_status(text: str, log_file: Path) -> dict:
 def _parse_step_data(text: str) -> list[dict]:
     """Parse per-step metrics from log text.
 
-    Returns a list of dicts with keys: step, seconds, tflops, mfu, tgs, loss.
+    Returns a list of dicts with keys: step, seconds, tflops, mfu, tgs, loss,
+    sorted by step number so warmup/steady partitioning is correct even when
+    log output is batched per rank (e.g. k8s NFS logs).
     """
     steps = []
     for m in RE_STEP_LINE.finditer(text):
@@ -450,6 +452,7 @@ def _parse_step_data(text: str) -> list[dict]:
             "tgs": float(m.group(5)),
             "loss": float(m.group(6)),
         })
+    steps.sort(key=lambda s: s["step"])
     return steps
 
 
@@ -465,8 +468,16 @@ def _compute_tgs_summary(steps: list[dict], num_nodes: int = 1) -> dict:
     all_step_nums = [s["step"] for s in steps]
     unique_steps = sorted(set(all_step_nums))
 
-    warmup_n = WARMUP_STEPS * num_nodes
-    steady_n = STEADY_STATE_STEPS * num_nodes
+    # Auto-detect entries per step from the data. Per-rank logs (k8s) have
+    # 1 entry/step despite num_nodes>1; Slurm logs have N entries/step.
+    # Override only for windowing; the caller's num_nodes is used for display.
+    effective_nodes = num_nodes
+    entries_per_step = len(all_tgs) // len(unique_steps) if unique_steps else 1
+    if entries_per_step != num_nodes:
+        effective_nodes = entries_per_step
+
+    warmup_n = WARMUP_STEPS * effective_nodes
+    steady_n = STEADY_STATE_STEPS * effective_nodes
     warmup = all_tgs[:warmup_n]
     steady = all_tgs[warmup_n: warmup_n + steady_n]
     tail_start = warmup_n + steady_n
@@ -488,14 +499,14 @@ def _compute_tgs_summary(steps: list[dict], num_nodes: int = 1) -> dict:
 
     s = _compute_stats(steady)
     if s:
-        s_logical = len(steady) // num_nodes if num_nodes else len(steady)
+        s_logical = len(steady) // effective_nodes if effective_nodes else len(steady)
         s["range"] = _step_range(WARMUP_STEPS, WARMUP_STEPS + s_logical - 1)
     result["steady"] = s
 
     t = _compute_stats(tail)
     if t:
         t_pos = WARMUP_STEPS + STEADY_STATE_STEPS
-        t_logical = len(tail) // num_nodes if num_nodes else len(tail)
+        t_logical = len(tail) // effective_nodes if effective_nodes else len(tail)
         t["range"] = _step_range(t_pos, t_pos + t_logical - 1)
     result["tail"] = t
 
@@ -503,6 +514,7 @@ def _compute_tgs_summary(steps: list[dict], num_nodes: int = 1) -> dict:
         result["all"]["range"] = _step_range(0, len(unique_steps) - 1)
 
     result["num_nodes"] = num_nodes
+    result["entries_per_step"] = effective_nodes
 
     return result
 
@@ -737,8 +749,9 @@ def _resolve_job_dir(path: Path) -> Path | None:
         if candidate.is_dir():
             return candidate
 
-        # Try job ID match
-        id_m = re.match(r"^([^-]+)-", stem)
+        # Try job ID match (Slurm: "9909-...", k8s: "k8s-YYYYMMDD-HHMMSS-XXXX-...",
+        # local: "local_YYYYMMDD_HHMMSS_XXXX-...")
+        id_m = re.match(r"^(k8s-[\d]+-[\d]+-[\da-f]+|local_[\d_]+[\da-f]+|\d+)-", stem)
         if id_m:
             job_id = id_m.group(1)
             for entry in sorted(parent.iterdir()):
@@ -903,7 +916,7 @@ def process_job(
             rc = 1
         # tgs_tagger may have renamed log file and/or job dir — re-resolve
         if job_dir and not job_dir.exists():
-            job_id_m = re.match(r"^([^-]+)-", job_dir.name)
+            job_id_m = re.match(r"^(k8s-[\d]+-[\d]+-[\da-f]+|local_[\d_]+[\da-f]+|\d+)-", job_dir.name)
             if job_id_m:
                 parent = job_dir.parent
                 for entry in sorted(parent.iterdir()):

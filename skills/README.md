@@ -18,4 +18,4 @@ Structured instructions for AI agents. Each skill encodes the methodology from v
 
 Both [Cursor](https://cursor.com/) and [Claude Code](https://docs.anthropic.com/en/docs/claude-code) read `CLAUDE.md` at the repo root, which references skill files by path.
 
-For [Kubernetes](https://kubernetes.io/)-specific run setup (outside Slurm orchestration), see [Kubernetes direct-container runs](../docs/k8s-direct-container.md).
+For [Kubernetes](https://kubernetes.io/) job submission and direct-container runs, see [Kubernetes job submission](../docs/k8s-job-submission.md).

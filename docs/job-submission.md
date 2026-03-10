@@ -105,7 +105,7 @@ RAY=1 in_container_run.sh 70b -- steps=10
 
 The interface is identical to `run_local.sh` (same model spec format, same `--` separator, same `_env_` overrides), but it skips the container launch — it runs `_train.sh` directly.
 
-For Kubernetes direct-container usage (recommended env vars, multinode mapping, and coredump caveats), see [Kubernetes direct-container runs](k8s-direct-container.md).
+For Kubernetes job submission and direct-container usage, see [Kubernetes job submission](k8s-job-submission.md).
 
 A common workflow is to enter the container interactively, then iterate:
 

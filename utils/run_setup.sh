@@ -90,10 +90,10 @@ JAX_PORT="${JAX_COORDINATOR_PORT:-$(pick_free_port)}"
 export JAX_COORDINATOR_PORT="$JAX_PORT"
 
 # Pick a free port for Ray head GCS (only when Ray is enabled).
-# Always pick fresh — inherited RAY_PORT (e.g. from a previous run's
-# container env) may be stale/occupied.
+# Respect an inherited RAY_PORT (e.g. set by k8s manifest for cross-pod
+# consistency). Pick fresh only when not pre-set.
 if [[ "${USE_RAY:-false}" == "true" ]]; then
-    RAY_PORT=$(pick_free_port "$JAX_PORT")
+    RAY_PORT="${RAY_PORT:-$(pick_free_port "$JAX_PORT")}"
     export RAY_PORT
 fi
 
@@ -121,7 +121,9 @@ ln -snf "../$JOB_DIR.log" "$JOB_WORKSPACE/$JOB_DIR/log"
     echo "MODEL_NAME=$MODEL_NAME"
     if [[ -n "$MODEL_NAME_ALIAS" ]]; then echo "MODEL_NAME_ALIAS=$MODEL_NAME_ALIAS"; fi
     if [[ -n "$EXP_TAG" ]]; then echo "EXP_TAG=$EXP_TAG"; fi
-} | tee "$LOG_FILE"
+} | tee ${_IN_CONTAINER_LOG_TEE_ACTIVE:+-a} "$LOG_FILE"
+# ↑ _IN_CONTAINER_LOG_TEE_ACTIVE (set by k8s non-rank-0 pods) adds -a
+#   to avoid truncating rank 0's output in the shared log.
 
 # Hold an append-mode fd to the log file. Unlike >> "$LOG_FILE" (which opens
 # by name), the fd follows the inode — so tgs_tagger -f can rename the file

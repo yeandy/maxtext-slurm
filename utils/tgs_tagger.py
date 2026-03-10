@@ -41,7 +41,7 @@ RE_STEP_TGS = re.compile(
 RE_QUANT = re.compile(r"Config param quantization:\s*(.*)")
 RE_PDBS = re.compile(r"Config param per_device_batch_size:\s*([0-9]+(?:\.[0-9]+)?)")
 RE_TGS_TAG = re.compile(r"(.*[-_]TGS_)[0-9]+(\.[0-9]+)?$")
-RE_JOB_ID = re.compile(r"^([^-]+)-")
+RE_JOB_ID = re.compile(r"^(k8s-[\d]+-[\d]+-[\da-f]+|local_[\d_]+[\da-f]+|\d+)-")
 RE_JOB_SUMMARY = re.compile(r"^=+ JOB SUMMARY =+", re.MULTILINE)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -242,6 +242,9 @@ def process_file(file: Path, cleanup: bool, force: bool = False) -> int:
         all_values = [float(m.group(1)) for m in RE_TOKENS.finditer(text)]
         all_step_nums = list(range(len(all_values)))
     else:
+        # Sort by step number so warmup/steady partitioning is correct
+        # even when log output is batched per rank (e.g. k8s NFS logs).
+        matches.sort(key=lambda m: m[0])
         all_step_nums = [s for s, _ in matches]
         all_values = [v for _, v in matches]
     total_steps = len(all_values)
@@ -259,6 +262,14 @@ def process_file(file: Path, cleanup: bool, force: bool = False) -> int:
     # ── deduplicate step numbers to get unique logical steps ──
     # Multi-node jobs log one value per node per step.
     unique_steps = sorted(set(all_step_nums))
+
+    # Auto-detect entries per step from the data. Per-rank logs (k8s) have
+    # 1 entry/step despite NNODES>1 in the header; Slurm logs have N entries/step.
+    # Preserve header value for display (xN tag); override only for windowing.
+    header_num_nodes = num_nodes
+    entries_per_step = total_steps // len(unique_steps) if unique_steps else 1
+    if entries_per_step != num_nodes:
+        num_nodes = entries_per_step
 
     # ── partition into warmup / steady / tail windows ──
     # Scale windows by num_nodes (each logical step has num_nodes entries).
@@ -393,7 +404,7 @@ def process_file(file: Path, cleanup: bool, force: bool = False) -> int:
         pdbs = _extract_per_device_batch_size(text)
         q_part = f"{quant}-" if quant else ""
         pdbs_part = f"pdbs{pdbs}-" if pdbs else ""
-        new_noext = f"{fname_noext}-{q_part}{num_nodes}N-{pdbs_part}TGS_{avg_tgs}"
+        new_noext = f"{fname_noext}-{q_part}{header_num_nodes}N-{pdbs_part}TGS_{avg_tgs}"
 
     new_path = directory / f"{new_noext}{file.suffix}"
 
@@ -496,8 +507,8 @@ def resolve_files(args: list[str], default_dir: str) -> list[Path]:
     for arg in args:
         p = Path(arg)
 
-        # Pure integer → job ID
-        if arg.isdigit():
+        # Job ID — numeric (Slurm), k8s-* (Kubernetes), or local_* (run_local)
+        if arg.isdigit() or arg.startswith(("k8s-", "local_")):
             job_dir = Path(default_dir)
             matches = sorted(_find_log_files(job_dir, f"{arg}-*"))
             if matches:

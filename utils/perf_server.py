@@ -159,7 +159,7 @@ def _job_summary(j: dict, dir_name: str = "", include_per_step: bool = False) ->
         "exit_code": js.get("exit_code"),
         "tgs_steady": steady.get("mean") if steady else None,
         "tgs_all": tgs.get("all", {}).get("mean") if tgs.get("all") else None,
-        "num_steps": _logical_steps(tgs, j.get("num_nodes")),
+        "num_steps": _logical_steps(tgs, j.get("entries_per_step") or j.get("num_nodes")),
         "step_begin": j.get("step_begin"),
         "step_end": j.get("step_end"),
         "computation_pct": tl.get("computation_time"),
@@ -168,7 +168,7 @@ def _job_summary(j: dict, dir_name: str = "", include_per_step: bool = False) ->
         "uses_ray": j.get("uses_ray", False),
     }
     if include_per_step:
-        nn = j.get("num_nodes") or 1
+        nn = j.get("entries_per_step") or j.get("num_nodes") or 1
         summary["tgs_per_step"] = _avg_per_step(j.get("tgs_per_step", []), nn)
     else:
         summary["timestamp"] = j.get("timestamp", "")
@@ -495,7 +495,7 @@ async def get_tgs_steps(job_id: str):
     """
     job_dir = _find_job_dir(job_id)
     data = _load_analysis(job_dir)
-    nn = data.get("num_nodes") or 1
+    nn = data.get("entries_per_step") or data.get("num_nodes") or 1
 
     return {
         "tgs_per_step": _avg_per_step(data.get("tgs_per_step", []), nn),
@@ -504,7 +504,7 @@ async def get_tgs_steps(job_id: str):
         "seconds_per_step": _avg_per_step(data.get("seconds_per_step", []), nn),
         "step_begin": data.get("step_begin", 0),
         "step_end": data.get("step_end"),
-        "num_nodes": nn,
+        "num_nodes": data.get("num_nodes") or 1,
         "tgs": data.get("tgs", {}),
     }
 

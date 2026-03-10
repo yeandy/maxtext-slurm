@@ -6,7 +6,7 @@ An extensible [AI skill framework](skills/) equips AI assistants with out-of-the
 
 This is a **reference implementation** of a [layered](docs/architecture.md) launch architecture where each tier — orchestration, container, training — can be [adapted independently](docs/extensibility.md) without cascading changes, including swapping the GPU vendor. See [Architecture](docs/architecture.md) for the full training flow and [Extensibility](docs/extensibility.md) for what each swap involves.
 
-[Kubernetes](https://kubernetes.io/) notes are intentionally kept minimal in this Slurm-first repo. For direct-container usage, see [Kubernetes direct-container runs](docs/k8s-direct-container.md).
+For [Kubernetes](https://kubernetes.io/) job submission, see [Kubernetes job submission](docs/k8s-job-submission.md).
 
 ## Quickstart
 
@@ -74,7 +74,7 @@ The [`skills/`](skills/) directory contains structured instructions for AI agent
 | Topic | Description |
 |---|---|
 | [Job Submission](docs/job-submission.md) | `JOB_WORKSPACE`, full `submit.sh` syntax, local runs, checkpointing, model aliases, environment config, artifacts |
-| [Kubernetes direct-container runs](docs/k8s-direct-container.md) | Minimal env contract for running `in_container_run.sh` / `debug_repro.sh` inside pods |
+| [Kubernetes job submission](docs/k8s-job-submission.md) | `k8s_submit.sh` usage, PVC setup, per-rank logs, differences from Slurm, direct-container runs |
 | [Model Configs](docs/model-configs.md) | Available models, adding new configs (patterns, section layout), resolution rules, CLI overrides |
 
 **Observe**
